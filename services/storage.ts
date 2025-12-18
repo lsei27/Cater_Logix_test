@@ -89,7 +89,7 @@ const loadCacheFromLocalStorage = (): boolean => {
   const stored = localStorage.getItem(LOCAL_CACHE_KEY);
   if (stored) {
     try {
-      CACHE = JSON.parse(stored);
+      CACHE = normalizeCache(JSON.parse(stored));
       return true;
     } catch (err) {
       console.warn('Failed to parse local cache', err);
@@ -98,18 +98,55 @@ const loadCacheFromLocalStorage = (): boolean => {
   return false;
 };
 
+let INIT_IN_FLIGHT: Promise<boolean> | null = null;
+
+const parseLocalDateStart = (dateStr: string) => new Date(`${dateStr}T00:00:00`);
+const parseLocalDateEnd = (dateStr: string) => new Date(`${dateStr}T23:59:59.999`);
+
+function normalizeEvent(event: any): CateringEvent {
+  const startDate = typeof event?.startDate === 'string' ? event.startDate : '';
+  const endDate = typeof event?.endDate === 'string' ? event.endDate : '';
+
+  return {
+    id: typeof event?.id === 'string' ? event.id : '',
+    name: typeof event?.name === 'string' ? event.name : '',
+    startDate,
+    endDate,
+    location: typeof event?.location === 'string' ? event.location : '',
+    deliveryDateTime: typeof event?.deliveryDateTime === 'string' ? event.deliveryDateTime : '',
+    pickupDateTime: typeof event?.pickupDateTime === 'string' ? event.pickupDateTime : undefined,
+    status: Object.values(EventStatus).includes(event?.status) ? event.status : EventStatus.PLANNED,
+    items: Array.isArray(event?.items) ? event.items : [],
+    notes: typeof event?.notes === 'string' ? event.notes : undefined,
+    createdById: typeof event?.createdById === 'string' ? event.createdById : '',
+    createdByName: typeof event?.createdByName === 'string' ? event.createdByName : ''
+  };
+}
+
+function normalizeCache(data: any): AppData {
+  const inventory = Array.isArray(data?.inventory) ? data.inventory : INITIAL_INVENTORY;
+  const events = Array.isArray(data?.events) ? data.events.map(normalizeEvent) : [];
+  const lastUpdated = typeof data?.lastUpdated === 'number' ? data.lastUpdated : Date.now();
+
+  return { inventory, events, lastUpdated };
+}
+
 // --- ROBUST NETWORK FETCH ---
 const robustFetch = async (url: string, options: RequestInit = {}) => {
+  const headers = new Headers(options.headers || {});
+  if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+
+  const hasBody = options.body !== undefined && options.body !== null;
+  if (hasBody && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   const defaultOptions: RequestInit = {
     ...options,
     mode: 'cors',
     credentials: 'omit',
     referrerPolicy: 'no-referrer',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      ...options.headers,
-    }
+    headers
   };
 
   const tryRequest = async (targetUrl: string) => {
@@ -216,66 +253,76 @@ export const StorageService = {
 
   // Initialize: Must succeed in Cloud or fail
   init: async (): Promise<boolean> => {
-    const hasLocalCache = loadCacheFromLocalStorage();
-    const projectId = StorageService.getProjectId();
+    if (INIT_IN_FLIGHT) return INIT_IN_FLIGHT;
 
-    if (projectId) {
-      // Trying to connect to existing ID
-      if (projectId.startsWith('offline_')) {
+    INIT_IN_FLIGHT = (async () => {
+      const hasLocalCache = loadCacheFromLocalStorage();
+      const projectId = StorageService.getProjectId();
+
+      if (projectId) {
+        // Trying to connect to existing ID
+        if (projectId.startsWith('offline_')) {
+            IS_CONNECTED = false;
+            notifyListeners();
+            return true; // Valid initialization for offline mode
+        }
+
+        try {
+          const success = await StorageService.reload();
+          if (success) {
+            IS_CONNECTED = true;
+            notifyListeners();
+            return true;
+          }
+        } catch (e) {
+          console.error("Init sync failed:", e);
+        }
+
+        if (hasLocalCache) {
+          console.warn("Falling back to local cache while offline.");
           IS_CONNECTED = false;
           notifyListeners();
-          return true; // Valid initialization for offline mode
-      }
-
-      try {
-        const success = await StorageService.reload();
-        if (success) {
-          IS_CONNECTED = true;
-          notifyListeners();
           return true;
         }
-      } catch (e) {
-        console.error("Init sync failed:", e);
-      }
+      } else {
+        // Create new Cloud Storage
+        try {
+          const initialData: AppData = { 
+              inventory: INITIAL_INVENTORY, 
+              events: [],
+              lastUpdated: Date.now()
+          };
+          let newId = await createCloudSpace(initialData);
 
-      if (hasLocalCache) {
-        console.warn("Falling back to local cache while offline.");
-        IS_CONNECTED = false;
-        notifyListeners();
-        return true;
-      }
-    } else {
-      // Create new Cloud Storage
-      try {
-        const initialData: AppData = { 
-            inventory: INITIAL_INVENTORY, 
-            events: [],
-            lastUpdated: Date.now()
-        };
-        let newId = await createCloudSpace(initialData);
+          if (!newId) {
+            console.warn("Failed to create cloud space after all attempts. Switching to Offline Mode.");
+            newId = `offline_${Date.now()}`;
+          }
 
-        if (!newId) {
-          console.warn("Failed to create cloud space after all attempts. Switching to Offline Mode.");
-          newId = `offline_${Date.now()}`;
+          if (newId) {
+            StorageService.setProjectId(newId);
+            CACHE = initialData;
+            persistCacheLocally();
+            IS_CONNECTED = !newId.startsWith('offline_'); // Only connected if real cloud ID
+            notifyListeners();
+            return true;
+          }
+        } catch (e) {
+          console.error("Creation critical failure:", e);
         }
-
-        if (newId) {
-          StorageService.setProjectId(newId);
-          CACHE = initialData;
-          persistCacheLocally();
-          IS_CONNECTED = !newId.startsWith('offline_'); // Only connected if real cloud ID
-          notifyListeners();
-          return true;
-        }
-      } catch (e) {
-        console.error("Creation critical failure:", e);
       }
+      
+      // Final fallback if everything crashed
+      IS_CONNECTED = false;
+      notifyListeners();
+      return false;
+    })();
+
+    try {
+      return await INIT_IN_FLIGHT;
+    } finally {
+      INIT_IN_FLIGHT = null;
     }
-    
-    // Final fallback if everything crashed
-    IS_CONNECTED = false;
-    notifyListeners();
-    return false;
   },
 
   // Pull latest data from cloud
@@ -286,7 +333,7 @@ export const StorageService = {
     try {
       // Add cache buster
       const response = await robustFetch(`${BLOB_API_URL}/${projectId}?_t=${Date.now()}`);
-      const cloudData = await response.json();
+      const cloudData = normalizeCache(await response.json());
       
       if (cloudData && Array.isArray(cloudData.inventory)) {
           const currentStr = JSON.stringify(CACHE);
@@ -404,33 +451,34 @@ export const StorageService = {
     if (!item) return { total: 0, reserved: 0, issued: 0, available: 0 };
 
     const events = CACHE.events;
-    const now = new Date(); 
-    now.setHours(0,0,0,0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayTime = today.getTime();
 
     let reserved = 0;
     let issued = 0;
 
-    events.forEach(event => {
-      // Only count active statuses
-      if (event.status !== EventStatus.RESERVED && event.status !== EventStatus.ISSUED) return;
+    for (const event of events) {
+      if (event.status === EventStatus.PLANNED || event.status === EventStatus.RETURNED) continue;
 
-      const start = new Date(event.startDate);
-      const end = new Date(event.endDate);
-      start.setHours(0,0,0,0);
-      end.setHours(23,59,59,999);
+      const evItem = event.items.find(i => i.itemId === itemId);
+      if (!evItem) continue;
 
-      // Only count if event is currently active (today falls within range)
-      if (now >= start && now <= end) {
-         const evItem = event.items.find(i => i.itemId === itemId);
-         if (evItem) {
-           if (event.status === EventStatus.ISSUED) {
-               issued += evItem.quantity;
-           } else {
-               reserved += evItem.quantity;
-           }
-         }
+      if (event.status === EventStatus.ISSUED) {
+        issued += evItem.quantity;
+        continue;
       }
-    });
+
+      const bufferDays = CATEGORY_BUFFER_DAYS[item.category] || 0;
+      const bufferMs = bufferDays * 24 * 60 * 60 * 1000;
+
+      const start = parseLocalDateStart(event.startDate).getTime();
+      const blockingEnd = parseLocalDateEnd(event.endDate).getTime() + bufferMs;
+
+      if (todayTime >= start && todayTime <= blockingEnd) {
+        reserved += evItem.quantity;
+      }
+    }
 
     return {
       total: item.totalQuantity,
@@ -446,10 +494,8 @@ export const StorageService = {
 
     const events = CACHE.events;
     
-    const reqStart = new Date(startDateStr);
-    reqStart.setHours(0,0,0,0);
-    const reqEnd = new Date(endDateStr);
-    reqEnd.setHours(23,59,59,999);
+    const reqStart = parseLocalDateStart(startDateStr);
+    const reqEnd = parseLocalDateEnd(endDateStr);
 
     const bufferDays = CATEGORY_BUFFER_DAYS[item.category] || 0;
     
@@ -464,10 +510,8 @@ export const StorageService = {
             // IMPORTANT: PLANNED (Drafts) do not block, RETURNED are closed.
             if (event.status === EventStatus.RETURNED || event.status === EventStatus.PLANNED) continue;
             
-            const evStart = new Date(event.startDate);
-            evStart.setHours(0,0,0,0);
-            const evEnd = new Date(event.endDate);
-            evEnd.setHours(23,59,59,999);
+            const evStart = parseLocalDateStart(event.startDate);
+            const evEnd = parseLocalDateEnd(event.endDate);
             
             const bufferMs = bufferDays * 24 * 60 * 60 * 1000;
             const blockingEnd = evEnd.getTime() + bufferMs;

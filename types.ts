@@ -44,6 +44,9 @@ export interface CateringEvent {
   name: string;
   startDate: string; // ISO Date string YYYY-MM-DD
   endDate: string;   // ISO Date string YYYY-MM-DD
+  location: string;
+  deliveryDateTime: string; // Local datetime string YYYY-MM-DDTHH:mm
+  pickupDateTime?: string;  // Local datetime string YYYY-MM-DDTHH:mm
   status: EventStatus;
   items: EventItem[];
   notes?: string;

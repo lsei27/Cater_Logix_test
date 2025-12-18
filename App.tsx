@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import { StorageService, AuthService } from './services/storage';
 import { CateringEvent, EventStatus, InventoryItem, EventItem, ItemCategory, CATEGORY_BUFFER_DAYS, User, UserRole } from './types';
 
@@ -24,7 +24,41 @@ const Icons = {
 
 // --- Helper Functions ---
 
+const getLocalISODate = (date: Date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const parseLocalDate = (dateStr: string) => new Date(`${dateStr}T00:00:00`);
+
+const parseLocalDateTime = (dateTimeStr: string) => {
+  if (!dateTimeStr) return null;
+  const [datePart, timePart] = dateTimeStr.split('T');
+  if (!datePart || !timePart) return null;
+
+  const [year, month, day] = datePart.split('-').map(Number);
+  const [hour, minute] = timePart.split(':').map(Number);
+  if (![year, month, day, hour, minute].every(Number.isFinite)) return null;
+
+  return new Date(year, month - 1, day, hour, minute, 0, 0);
+};
+
+const formatLocalDateTime = (dateTimeStr?: string) => {
+  if (!dateTimeStr) return '';
+  const dt = parseLocalDateTime(dateTimeStr);
+  if (!dt || Number.isNaN(dt.getTime())) return dateTimeStr;
+  return dt.toLocaleString('cs-CZ', { dateStyle: 'medium', timeStyle: 'short' });
+};
+
 const downloadEventCSV = (event: CateringEvent, inventory: InventoryItem[]) => {
+  const escapeCell = (value: unknown) => {
+    const str = String(value ?? '');
+    if (/[;"\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+    return str;
+  };
+
   const headers = ['Položka', 'Kategorie', 'Množství'];
   
   const rows = event.items.map(item => {
@@ -36,9 +70,19 @@ const downloadEventCSV = (event: CateringEvent, inventory: InventoryItem[]) => {
     ];
   });
 
+  const metaRows = [
+    ['Akce', event.name],
+    ['Místo', event.location],
+    ['Období', `${event.startDate} – ${event.endDate}`],
+    ['Závoz', formatLocalDateTime(event.deliveryDateTime)],
+    ['Svoz', formatLocalDateTime(event.pickupDateTime) || '']
+  ];
+
   const csvContent = [
-    headers.join(';'),
-    ...rows.map(row => row.join(';'))
+    ...metaRows.map(row => row.map(escapeCell).join(';')),
+    '',
+    headers.map(escapeCell).join(';'),
+    ...rows.map(row => row.map(escapeCell).join(';'))
   ].join('\n');
 
   const blob = new Blob([`\ufeff${csvContent}`], { type: 'text/csv;charset=utf-8;' });
@@ -49,6 +93,7 @@ const downloadEventCSV = (event: CateringEvent, inventory: InventoryItem[]) => {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 };
 
 const StatusBadge = ({ status }: { status: EventStatus }) => {
@@ -215,6 +260,7 @@ export default function App() {
 
     const unsubscribe = StorageService.subscribe(() => {
         refreshData();
+        setProjectId(StorageService.getProjectId());
         setIsOnline(StorageService.isConnected());
         setIsProxy(StorageService.isUsingProxy());
     });
@@ -231,7 +277,7 @@ export default function App() {
   }, [currentUser, projectId]);
 
   const refreshData = () => {
-    setEvents(StorageService.getEvents().sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()));
+    setEvents([...StorageService.getEvents()].sort((a, b) => parseLocalDate(a.startDate).getTime() - parseLocalDate(b.startDate).getTime()));
     setInventory(StorageService.getInventory());
   };
 
@@ -251,9 +297,13 @@ export default function App() {
   const handleShare = () => {
     if (!projectId) return;
     const url = `${window.location.origin}${window.location.pathname}?teamId=${projectId}`;
-    navigator.clipboard.writeText(url).then(() => {
-      alert("Odkaz na váš tým byl zkopírován do schránky. Pošlete ho kolegům.");
-    });
+    navigator.clipboard.writeText(url)
+      .then(() => {
+        alert("Odkaz na váš tým byl zkopírován do schránky. Pošlete ho kolegům.");
+      })
+      .catch(() => {
+        window.prompt("Zkopírujte odkaz pro kolegy:", url);
+      });
   };
 
   const retryConnection = () => {
@@ -532,10 +582,23 @@ function ManagerView({ view, setView, events, inventory, activeEventId, setActiv
                         {event.createdByName || 'Neznámý'}
                      </span>
                   </div>
-                  <div className="text-sm text-gray-500 flex items-center gap-2 mb-4">
-                    <Icons.Calendar />
-                    {new Date(event.startDate).toLocaleDateString('cs-CZ')} – {new Date(event.endDate).toLocaleDateString('cs-CZ')}
-                  </div>
+		                  <div className="text-sm text-gray-500 mb-4 space-y-1">
+		                    <div className="flex items-center gap-2">
+		                      <Icons.Calendar />
+		                      {parseLocalDate(event.startDate).toLocaleDateString('cs-CZ')} – {parseLocalDate(event.endDate).toLocaleDateString('cs-CZ')}
+		                    </div>
+		                    <div className="text-xs text-gray-500 truncate" title={event.location || ''}>
+		                      Místo: <span className="text-gray-700">{event.location || '—'}</span>
+		                    </div>
+		                    <div className="text-xs text-gray-500">
+		                      Závoz: <span className="text-gray-700">{formatLocalDateTime(event.deliveryDateTime) || '—'}</span>
+		                    </div>
+		                    {event.pickupDateTime && (
+		                      <div className="text-xs text-gray-500">
+		                        Svoz: <span className="text-gray-700">{formatLocalDateTime(event.pickupDateTime)}</span>
+		                      </div>
+		                    )}
+		                  </div>
                   
                   <div className="mt-auto pt-4 border-t border-gray-100 flex items-center justify-between">
                     <div className="flex flex-col text-sm text-gray-600">
@@ -760,8 +823,11 @@ function EventEditor({ initialData, inventory, onCancel, onSave, currentUser }: 
   const [formData, setFormData] = useState<Partial<CateringEvent>>(
     initialData || {
       name: '',
-      startDate: new Date().toISOString().split('T')[0],
-      endDate: new Date().toISOString().split('T')[0],
+      startDate: getLocalISODate(),
+      endDate: getLocalISODate(),
+      location: '',
+      deliveryDateTime: '',
+      pickupDateTime: '',
       status: EventStatus.PLANNED,
       items: [],
       notes: ''
@@ -790,23 +856,80 @@ function EventEditor({ initialData, inventory, onCancel, onSave, currentUser }: 
   };
 
   const handleQuantityChange = (itemId: string, qty: number, max: number) => {
+      const positiveQty = Math.max(1, qty);
+      const clampedQty = max > 0 ? Math.min(positiveQty, max) : positiveQty;
       setFormData({
           ...formData,
-          items: formData.items?.map((i: EventItem) => i.itemId === itemId ? { ...i, quantity: qty } : i) || []
+          items: formData.items?.map((i: EventItem) => i.itemId === itemId ? { ...i, quantity: clampedQty } : i) || []
       });
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.SyntheticEvent) => {
+    e?.preventDefault();
     if (!formData.name || !formData.startDate || !formData.endDate) return;
+
+    const start = parseLocalDate(formData.startDate);
+    const end = parseLocalDate(formData.endDate);
+    if (start.getTime() > end.getTime()) {
+      alert("Datum 'Do' nesmí být před datem 'Od'.");
+      return;
+    }
+
+    const location = formData.location?.trim() || '';
+    if (!location) {
+      alert("Vyplňte prosím místo akce.");
+      return;
+    }
+
+    if (!formData.deliveryDateTime) {
+      alert("Vyplňte prosím datum a čas závozu.");
+      return;
+    }
+
+    const deliveryDateTime = parseLocalDateTime(formData.deliveryDateTime);
+    if (!deliveryDateTime || Number.isNaN(deliveryDateTime.getTime())) {
+      alert("Neplatný formát data/času závozu.");
+      return;
+    }
+
+    let pickupDateTimeStr: string | undefined = formData.pickupDateTime || undefined;
+    if (pickupDateTimeStr && pickupDateTimeStr.trim()) {
+      const pickupDt = parseLocalDateTime(pickupDateTimeStr);
+      if (!pickupDt || Number.isNaN(pickupDt.getTime())) {
+        alert("Neplatný formát data/času svozu.");
+        return;
+      }
+      if (pickupDt.getTime() < deliveryDateTime.getTime()) {
+        alert("Svoz nemůže být dříve než závoz.");
+        return;
+      }
+      pickupDateTimeStr = pickupDateTimeStr.trim();
+    } else {
+      pickupDateTimeStr = undefined;
+    }
+
+    const items: EventItem[] = (formData.items || [])
+      .map((i: EventItem) => ({ ...i, quantity: Math.max(1, Number(i.quantity) || 1) }));
+
+    for (const item of items) {
+      const available = StorageService.checkAvailability(item.itemId, formData.startDate, formData.endDate, initialData?.id);
+      if (available <= 0 || item.quantity > available) {
+        const invItem = inventory.find((i: InventoryItem) => i.id === item.itemId);
+        alert(`Nedostupná položka: ${invItem?.name || item.itemId}. Dostupné: ${available}, požadováno: ${item.quantity}.`);
+        return;
+      }
+    }
 
     const event: CateringEvent = {
         id: initialData?.id || Date.now().toString(),
         name: formData.name!,
         startDate: formData.startDate!,
         endDate: formData.endDate!,
+        location,
+        deliveryDateTime: formData.deliveryDateTime,
+        pickupDateTime: pickupDateTimeStr,
         status: formData.status || EventStatus.PLANNED,
-        items: formData.items || [],
+        items,
         notes: formData.notes,
         createdById: initialData?.createdById || currentUser.id,
         createdByName: initialData?.createdByName || currentUser.name
@@ -850,30 +973,62 @@ function EventEditor({ initialData, inventory, onCancel, onSave, currentUser }: 
                            placeholder="Svatba Novákovi..."
                         />
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                         <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Od</label>
-                            <input 
-                                type="date" 
-                                className="w-full p-2 text-sm border border-gray-300 rounded"
-                                value={formData.startDate}
-                                onChange={e => setFormData({...formData, startDate: e.target.value})}
-                            />
-                         </div>
-                         <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Do</label>
-                            <input 
-                                type="date" 
-                                className="w-full p-2 text-sm border border-gray-300 rounded"
-                                value={formData.endDate}
-                                onChange={e => setFormData({...formData, endDate: e.target.value})}
-                            />
-                         </div>
-                    </div>
-                    <div>
-                         <label className="block text-xs font-medium text-gray-500 mb-1">Status</label>
-                         <select 
-                            className="w-full p-2 text-sm border border-gray-300 rounded"
+	                    <div className="grid grid-cols-2 gap-2">
+	                         <div>
+	                            <label className="block text-xs font-medium text-gray-500 mb-1">Od</label>
+	                            <input 
+	                                type="date" 
+	                                className="w-full p-2 text-sm border border-gray-300 rounded"
+	                                value={formData.startDate}
+	                                onChange={e => setFormData({...formData, startDate: e.target.value})}
+	                            />
+	                         </div>
+	                         <div>
+	                            <label className="block text-xs font-medium text-gray-500 mb-1">Do</label>
+	                            <input 
+	                                type="date" 
+	                                className="w-full p-2 text-sm border border-gray-300 rounded"
+	                                value={formData.endDate}
+	                                onChange={e => setFormData({...formData, endDate: e.target.value})}
+	                            />
+	                         </div>
+	                    </div>
+	                    <div>
+	                        <label className="block text-xs font-medium text-gray-500 mb-1">Místo akce</label>
+	                        <input
+	                           required
+	                           type="text"
+	                           className="w-full p-2 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+	                           value={formData.location || ''}
+	                           onChange={e => setFormData({ ...formData, location: e.target.value })}
+	                           placeholder="Adresa / místo závozu..."
+	                        />
+	                    </div>
+	                    <div className="grid grid-cols-2 gap-2">
+	                        <div>
+	                          <label className="block text-xs font-medium text-gray-500 mb-1">Závoz (datum/čas)</label>
+	                          <input
+	                            required
+	                            type="datetime-local"
+	                            className="w-full p-2 text-sm border border-gray-300 rounded"
+	                            value={formData.deliveryDateTime || ''}
+	                            onChange={e => setFormData({ ...formData, deliveryDateTime: e.target.value })}
+	                          />
+	                        </div>
+	                        <div>
+	                          <label className="block text-xs font-medium text-gray-500 mb-1">Svoz (datum/čas)</label>
+	                          <input
+	                            type="datetime-local"
+	                            className="w-full p-2 text-sm border border-gray-300 rounded"
+	                            value={formData.pickupDateTime || ''}
+	                            onChange={e => setFormData({ ...formData, pickupDateTime: e.target.value })}
+	                          />
+	                        </div>
+	                    </div>
+	                    <div>
+	                         <label className="block text-xs font-medium text-gray-500 mb-1">Status</label>
+	                         <select 
+	                            className="w-full p-2 text-sm border border-gray-300 rounded"
                             value={formData.status}
                             onChange={e => setFormData({...formData, status: e.target.value as EventStatus})}
                          >
@@ -1002,9 +1157,24 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
   const returnedEvents = events.filter((e: CateringEvent) => e.status === EventStatus.RETURNED);
   
   if (view === 'EVENT_PROCESS') {
+     const event = events.find((e: any) => e.id === activeEventId);
+     if (!event) {
+       return (
+         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+           <h2 className="text-lg font-bold text-gray-900 mb-2">Akce nebyla nalezena</h2>
+           <p className="text-sm text-gray-600 mb-4">Vybraná akce už neexistuje (nebo se data mezitím změnila).</p>
+           <button
+             onClick={() => { setView('LIST'); setActiveEventId(null); }}
+             className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-medium"
+           >
+             Zpět
+           </button>
+         </div>
+       );
+     }
      return (
          <WarehouseProcess 
-            event={events.find((e:any) => e.id === activeEventId)} 
+            event={event} 
             inventory={inventory}
             onBack={() => { setView('LIST'); setActiveEventId(null); }}
             onSave={async () => {
@@ -1064,10 +1234,23 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
                                 <span className="text-xs font-mono text-gray-400">#{event.id.slice(-4)}</span>
                             </div>
                             <h3 className="font-bold text-gray-700 text-lg mb-1">{event.name}</h3>
-                            <div className="text-sm text-gray-500 flex items-center gap-2 mb-4">
-                                <Icons.Calendar />
-                                {new Date(event.startDate).toLocaleDateString('cs-CZ')}
-                            </div>
+		                            <div className="text-sm text-gray-500 mb-4 space-y-1">
+		                                <div className="flex items-center gap-2">
+		                                  <Icons.Calendar />
+		                                  {parseLocalDate(event.startDate).toLocaleDateString('cs-CZ')}
+		                                </div>
+		                                <div className="text-xs text-gray-500 truncate" title={event.location || ''}>
+		                                  Místo: <span className="text-gray-700">{event.location || '—'}</span>
+		                                </div>
+		                                <div className="text-xs text-gray-500">
+		                                  Závoz: <span className="text-gray-700">{formatLocalDateTime(event.deliveryDateTime) || '—'}</span>
+		                                </div>
+		                                {event.pickupDateTime && (
+		                                  <div className="text-xs text-gray-500">
+		                                    Svoz: <span className="text-gray-700">{formatLocalDateTime(event.pickupDateTime)}</span>
+		                                  </div>
+		                                )}
+		                            </div>
                             <div className="space-y-2 pt-4 border-t border-gray-200">
                                 <div className="flex justify-between text-sm">
                                     <span className="text-gray-600">Položek:</span>
@@ -1101,21 +1284,34 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
         <div className="space-y-4">
             <h2 className="text-lg font-bold text-gray-900">Plánované akce (K vyřízení)</h2>
             <div className="grid gap-4 sm:grid-cols-2">
-                {activeEvents.map((event: CateringEvent) => {
-                    const isToday = new Date(event.startDate).toDateString() === new Date().toDateString();
-                    
-                    return (
+	                {activeEvents.map((event: CateringEvent) => {
+	                    const isToday = parseLocalDate(event.startDate).toDateString() === new Date().toDateString();
+	                    
+	                    return (
                         <div key={event.id} className={`bg-white rounded-xl border p-5 shadow-sm hover:shadow-md transition-all ${isToday ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-gray-200'}`}>
                             <div className="flex justify-between items-start mb-3">
                                 <StatusBadge status={event.status} />
                                 <span className="text-xs font-mono text-gray-400">#{event.id.slice(-4)}</span>
                             </div>
                             <h3 className="font-bold text-gray-900 text-lg mb-1">{event.name}</h3>
-                            <div className="text-sm text-gray-500 flex items-center gap-2 mb-4">
-                                <Icons.Calendar />
-                                {new Date(event.startDate).toLocaleDateString('cs-CZ')}
-                                {isToday && <span className="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-bold animate-pulse">DNES</span>}
-                            </div>
+		                            <div className="text-sm text-gray-500 mb-4 space-y-1">
+		                                <div className="flex items-center gap-2">
+		                                  <Icons.Calendar />
+		                                  {parseLocalDate(event.startDate).toLocaleDateString('cs-CZ')}
+		                                  {isToday && <span className="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-bold animate-pulse">DNES</span>}
+		                                </div>
+		                                <div className="text-xs text-gray-500 truncate" title={event.location || ''}>
+		                                  Místo: <span className="text-gray-700">{event.location || '—'}</span>
+		                                </div>
+		                                <div className="text-xs text-gray-500">
+		                                  Závoz: <span className="text-gray-700">{formatLocalDateTime(event.deliveryDateTime) || '—'}</span>
+		                                </div>
+		                                {event.pickupDateTime && (
+		                                  <div className="text-xs text-gray-500">
+		                                    Svoz: <span className="text-gray-700">{formatLocalDateTime(event.pickupDateTime)}</span>
+		                                  </div>
+		                                )}
+		                            </div>
                             
                             <div className="space-y-2 pt-4 border-t border-gray-100">
                                 <div className="flex justify-between text-sm">
@@ -1166,12 +1362,18 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
 }
 
 function WarehouseProcess({ event, inventory, onBack, onSave }: any) {
-    const [items, setItems] = useState<EventItem[]>(JSON.parse(JSON.stringify(event.items)));
+    const [items, setItems] = useState<EventItem[]>(() => (event?.items || []).map((i: EventItem) => ({ ...i })));
     const isReturning = event.status === EventStatus.ISSUED;
     const isClosed = event.status === EventStatus.RETURNED;
 
     const handleReturnCount = (itemId: string, val: number) => {
-        setItems(items.map(i => i.itemId === itemId ? { ...i, returnedQuantity: val } : i));
+        setItems(prev =>
+          prev.map(i => {
+            if (i.itemId !== itemId) return i;
+            const clamped = Math.max(0, Math.min(val, i.quantity));
+            return { ...i, returnedQuantity: clamped };
+          })
+        );
     };
 
     const handleProcess = async () => {
@@ -1196,11 +1398,24 @@ function WarehouseProcess({ event, inventory, onBack, onSave }: any) {
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-120px)]">
              <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-xl">
                 <div>
-                    <h2 className="text-lg font-bold text-gray-900">
-                        {isClosed ? 'Detail ukončené akce' : (isReturning ? 'Příjem vratky (Uzavření akce)' : 'Výdej ze skladu')}
-                    </h2>
-                    <p className="text-xs text-gray-500">{event.name}</p>
-                </div>
+	                    <h2 className="text-lg font-bold text-gray-900">
+	                        {isClosed ? 'Detail ukončené akce' : (isReturning ? 'Příjem vratky (Uzavření akce)' : 'Výdej ze skladu')}
+	                    </h2>
+	                    <p className="text-xs text-gray-500">{event.name}</p>
+	                    <div className="mt-1 text-xs text-gray-600 space-y-0.5">
+	                      <div className="truncate" title={event.location || ''}>
+	                        Místo: <span className="text-gray-800">{event.location || '—'}</span>
+	                      </div>
+	                      <div>
+	                        Závoz: <span className="text-gray-800">{formatLocalDateTime(event.deliveryDateTime) || '—'}</span>
+	                      </div>
+	                      {event.pickupDateTime && (
+	                        <div>
+	                          Svoz: <span className="text-gray-800">{formatLocalDateTime(event.pickupDateTime)}</span>
+	                        </div>
+	                      )}
+	                    </div>
+	                </div>
                 <div className="flex gap-2">
                     <button onClick={onBack} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded">Zpět</button>
                     {!isClosed && (
