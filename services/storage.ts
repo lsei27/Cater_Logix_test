@@ -1,10 +1,12 @@
 import { CateringEvent, InventoryItem, ItemCategory, EventStatus, CATEGORY_BUFFER_DAYS, User, UserRole } from '../types';
 
 const STORAGE_KEYS = {
-  INVENTORY: 'caterlogix_inventory',
-  EVENTS: 'caterlogix_events',
-  CURRENT_USER: 'caterlogix_current_user'
+  PROJECT_ID: 'caterlogix_project_id',
+  CURRENT_USER: 'caterlogix_current_user',
+  LOCAL_BACKUP: 'caterlogix_local_data'
 };
+
+const BLOB_API_URL = 'https://jsonblob.com/api/jsonBlob';
 
 // Mock Users Database
 const MOCK_USERS: User[] = [
@@ -22,6 +24,14 @@ const INITIAL_INVENTORY: InventoryItem[] = [
   { id: '6', name: 'Příborový set', category: ItemCategory.DISHES, totalQuantity: 200, imageUrl: 'https://images.unsplash.com/photo-1584346133934-a3afd2a5d246?auto=format&fit=crop&w=200&q=80' },
   { id: '7', name: 'Ubrus bílý', category: ItemCategory.OTHER, totalQuantity: 50, imageUrl: 'https://images.unsplash.com/photo-1593000956405-01e4a22e93b2?auto=format&fit=crop&w=200&q=80' },
 ];
+
+// In-memory cache to keep app fast while syncing
+let CACHE = {
+  inventory: [] as InventoryItem[],
+  events: [] as CateringEvent[]
+};
+
+let IS_INITIALIZED = false;
 
 export const AuthService = {
   getAvailableUsers: () => MOCK_USERS,
@@ -46,51 +56,166 @@ export const AuthService = {
 };
 
 export const StorageService = {
-  getInventory: (): InventoryItem[] => {
-    const stored = localStorage.getItem(STORAGE_KEYS.INVENTORY);
-    if (!stored) {
-      localStorage.setItem(STORAGE_KEYS.INVENTORY, JSON.stringify(INITIAL_INVENTORY));
-      return INITIAL_INVENTORY;
+  // --- CLOUD SYNC LOGIC ---
+
+  getProjectId: () => localStorage.getItem(STORAGE_KEYS.PROJECT_ID),
+
+  setProjectId: (id: string) => {
+    localStorage.setItem(STORAGE_KEYS.PROJECT_ID, id);
+    IS_INITIALIZED = false; // Force reload
+  },
+
+  // Initialize: Load from Cloud or Local Backup or Create New
+  init: async (): Promise<boolean> => {
+    if (IS_INITIALIZED) return true;
+
+    // 1. Always load local backup first to ensure immediate data availability
+    const localBackup = localStorage.getItem(STORAGE_KEYS.LOCAL_BACKUP);
+    if (localBackup) {
+      try {
+        CACHE = JSON.parse(localBackup);
+        IS_INITIALIZED = true;
+      } catch (e) {
+        console.error("Corrupt local data", e);
+        CACHE = { inventory: INITIAL_INVENTORY, events: [] };
+      }
+    } else {
+      CACHE = { inventory: INITIAL_INVENTORY, events: [] };
     }
-    return JSON.parse(stored);
+
+    const projectId = StorageService.getProjectId();
+
+    if (projectId) {
+      // 2. Try to sync with cloud
+      try {
+        const response = await fetch(`${BLOB_API_URL}/${projectId}`, {
+           headers: { 'Accept': 'application/json' }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          CACHE = data;
+          // Update local backup with fresh cloud data
+          localStorage.setItem(STORAGE_KEYS.LOCAL_BACKUP, JSON.stringify(CACHE));
+          IS_INITIALIZED = true;
+          return true;
+        } else {
+          console.warn("Cloud load failed, using local backup.");
+        }
+      } catch (e) {
+        console.warn("Network error during init, using local backup", e);
+      }
+    } else {
+      // 3. Create new Cloud Storage
+      try {
+        const response = await fetch(BLOB_API_URL, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify(CACHE)
+        });
+
+        if (response.ok) {
+          const location = response.headers.get('Location');
+          // Location header is usually full URL, we need the UUID at the end
+          if (location) {
+             const newId = location.split('/').pop();
+             if (newId) {
+               StorageService.setProjectId(newId);
+             }
+          }
+        }
+      } catch (e) {
+        console.error("Failed to create cloud storage", e);
+        // Continue with local data, user will be offline for now
+      }
+    }
+    
+    IS_INITIALIZED = true;
+    return true;
   },
 
-  updateInventory: (items: InventoryItem[]) => {
-    localStorage.setItem(STORAGE_KEYS.INVENTORY, JSON.stringify(items));
+  sync: async () => {
+    // 1. Always save to local storage immediately
+    localStorage.setItem(STORAGE_KEYS.LOCAL_BACKUP, JSON.stringify(CACHE));
+
+    // 2. Try to save to cloud
+    const projectId = StorageService.getProjectId();
+    if (!projectId) return;
+
+    try {
+      await fetch(`${BLOB_API_URL}/${projectId}`, {
+        method: 'PUT',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify(CACHE)
+      });
+    } catch (e) {
+      console.error("Sync failed", e);
+    }
   },
 
-  saveInventoryItem: (item: InventoryItem) => {
-    // Reload to avoid race conditions in simple localStorage implementation
-    const items = StorageService.getInventory();
+  // Reload data from cloud (for background sync)
+  reload: async (): Promise<boolean> => {
+    const projectId = StorageService.getProjectId();
+    if (!projectId) return false;
+
+    try {
+      const response = await fetch(`${BLOB_API_URL}/${projectId}`, {
+          headers: { 'Accept': 'application/json' }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        CACHE = data;
+        localStorage.setItem(STORAGE_KEYS.LOCAL_BACKUP, JSON.stringify(CACHE));
+        return true;
+      }
+    } catch (e) {
+      // console.error("Background sync failed", e);
+    }
+    return false;
+  },
+
+  // --- DATA ACCESS ---
+
+  getInventory: (): InventoryItem[] => {
+    return CACHE.inventory || [];
+  },
+
+  updateInventory: async (items: InventoryItem[]) => {
+    CACHE.inventory = items;
+    await StorageService.sync();
+  },
+
+  saveInventoryItem: async (item: InventoryItem) => {
+    const items = [...CACHE.inventory];
     const index = items.findIndex(i => i.id === item.id);
     if (index >= 0) {
       items[index] = item;
     } else {
       items.push(item);
     }
-    StorageService.updateInventory(items);
+    await StorageService.updateInventory(items);
   },
 
-  deleteInventoryItem: (id: string) => {
-    const items = StorageService.getInventory();
-    const filtered = items.filter(i => i.id !== id);
-    StorageService.updateInventory(filtered);
+  deleteInventoryItem: async (id: string) => {
+    const items = CACHE.inventory.filter(i => i.id !== id);
+    await StorageService.updateInventory(items);
   },
 
   getEvents: (): CateringEvent[] => {
-    const stored = localStorage.getItem(STORAGE_KEYS.EVENTS);
-    if (!stored) return [];
-    return JSON.parse(stored);
+    return CACHE.events || [];
   },
 
-  saveEvents: (events: CateringEvent[]) => {
-    localStorage.setItem(STORAGE_KEYS.EVENTS, JSON.stringify(events));
+  updateEvents: async (events: CateringEvent[]) => {
+    CACHE.events = events;
+    await StorageService.sync();
   },
 
-  addEvent: (event: CateringEvent) => {
-    // Ensure we have the latest state
-    const events = StorageService.getEvents();
-    
+  addEvent: async (event: CateringEvent) => {
     // Attach current user info if available and not present
     if (!event.createdById) {
       const currentUser = AuthService.getCurrentUser();
@@ -100,34 +225,34 @@ export const StorageService = {
       }
     }
     
-    events.push(event);
-    StorageService.saveEvents(events);
+    const events = [...CACHE.events, event];
+    await StorageService.updateEvents(events);
   },
 
-  updateEvent: (updatedEvent: CateringEvent) => {
-    const events = StorageService.getEvents();
+  updateEvent: async (updatedEvent: CateringEvent) => {
+    const events = [...CACHE.events];
     const index = events.findIndex(e => e.id === updatedEvent.id);
     if (index !== -1) {
       events[index] = updatedEvent;
-      StorageService.saveEvents(events);
+      await StorageService.updateEvents(events);
     }
   },
 
-  // Calculates stats for "Now"
+  // Calculates stats for "Now" - Used for Dashboard
   getItemStats: (itemId: string) => {
-    const inventory = StorageService.getInventory();
-    const item = inventory.find(i => i.id === itemId);
+    const item = CACHE.inventory.find(i => i.id === itemId);
     if (!item) return { total: 0, onAction: 0, available: 0 };
 
-    const events = StorageService.getEvents();
+    const events = CACHE.events;
     const now = new Date();
     now.setHours(0, 0, 0, 0); // Normalize today
 
     let onAction = 0;
 
     events.forEach(event => {
-      // Ignore Drafts and Returned (Closed) events
-      if (event.status === EventStatus.PLANNED || event.status === EventStatus.RETURNED) return;
+      // Only count items physically out of warehouse (ISSUED) or actively RESERVED for today
+      // Logic: If it is reserved for today, it is effectively not available for another walk-in reservation
+      if (event.status !== EventStatus.RESERVED && event.status !== EventStatus.ISSUED) return;
 
       const start = new Date(event.startDate);
       const end = new Date(event.endDate);
@@ -148,13 +273,13 @@ export const StorageService = {
     };
   },
 
-  // Future Availability Logic for Planning
+  // Future Availability Logic for Planning (The "Duplication" preventer)
+  // This logic correctly handles RESERVED items.
   checkAvailability: (itemId: string, startDateStr: string, endDateStr: string, currentEventId?: string): number => {
-    const inventory = StorageService.getInventory();
-    const item = inventory.find(i => i.id === itemId);
+    const item = CACHE.inventory.find(i => i.id === itemId);
     if (!item) return 0;
 
-    const events = StorageService.getEvents();
+    const events = CACHE.events;
     const reqStart = new Date(startDateStr).getTime();
     const reqEnd = new Date(endDateStr).getTime();
     const bufferDays = CATEGORY_BUFFER_DAYS[item.category] || 0;
@@ -164,13 +289,17 @@ export const StorageService = {
 
     for (const event of events) {
       if (currentEventId && event.id === currentEventId) continue;
-      if (event.status === EventStatus.RETURNED) continue;
+      if (event.status === EventStatus.RETURNED || event.status === EventStatus.PLANNED) continue;
+      
+      // IMPORTANT: Matches RESERVED and ISSUED.
+      // This ensures that even if warehouse hasn't clicked "Issue", the item is blocked.
       if (event.status !== EventStatus.RESERVED && event.status !== EventStatus.ISSUED) continue;
 
       const evStart = new Date(event.startDate).getTime();
       let evEnd = new Date(event.endDate).getTime();
       const blockingEnd = evEnd + bufferMs;
 
+      // Check overlap
       if (reqStart <= blockingEnd && evStart <= reqEnd) {
         const eventItem = event.items.find(i => i.itemId === itemId);
         if (eventItem) {
@@ -182,8 +311,9 @@ export const StorageService = {
     return Math.max(0, item.totalQuantity - reservedQuantity);
   },
 
-  closeEvent: (event: CateringEvent) => {
-    const inventory = StorageService.getInventory();
+  closeEvent: async (event: CateringEvent) => {
+    // 1. Calculate losses and update inventory locally
+    const inventory = [...CACHE.inventory];
     event.items.forEach(evItem => {
       const invItemIndex = inventory.findIndex(i => i.id === evItem.itemId);
       if (invItemIndex !== -1) {
@@ -192,13 +322,23 @@ export const StorageService = {
         const returnedGood = evItem.returnedQuantity || 0;
         const loss = issued - returnedGood;
         if (loss > 0) {
+          // Permanently subtract lost items
           item.totalQuantity = Math.max(0, item.totalQuantity - loss);
         }
       }
     });
 
-    StorageService.updateInventory(inventory);
+    // 2. Update Event Status
     event.status = EventStatus.RETURNED;
-    StorageService.updateEvent(event);
+    
+    // 3. Sync everything
+    CACHE.inventory = inventory;
+    
+    const events = [...CACHE.events];
+    const evIndex = events.findIndex(e => e.id === event.id);
+    if (evIndex !== -1) events[evIndex] = event;
+    CACHE.events = events;
+
+    await StorageService.sync();
   }
 };

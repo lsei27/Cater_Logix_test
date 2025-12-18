@@ -15,7 +15,9 @@ const Icons = {
   Image: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>,
   User: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>,
   Logout: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>,
-  Upload: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+  Upload: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>,
+  Cloud: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>,
+  Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
 };
 
 // --- Helper Functions ---
@@ -65,10 +67,20 @@ const StatusBadge = ({ status }: { status: EventStatus }) => {
 
 function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const users = AuthService.getAvailableUsers();
+  const [projectIdInput, setProjectIdInput] = useState('');
+  const [showConnect, setShowConnect] = useState(false);
 
   const handleUserSelect = (userId: string) => {
     AuthService.login(userId);
     onLogin();
+  };
+
+  const handleConnect = () => {
+    if (projectIdInput.trim()) {
+      StorageService.setProjectId(projectIdInput.trim());
+      alert("Tým nastaven. Přihlaste se.");
+      setShowConnect(false);
+    }
   };
 
   return (
@@ -101,8 +113,34 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
           ))}
         </div>
         
-        <div className="mt-8 text-center text-xs text-gray-400">
-           Simulace autentizace pro demo účely
+        <div className="mt-8 pt-6 border-t border-gray-100">
+           <button 
+             onClick={() => setShowConnect(!showConnect)}
+             className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center justify-center gap-1 w-full"
+           >
+             <Icons.Cloud /> {showConnect ? 'Skrýt nastavení' : 'Připojit k existujícímu týmu (synchronizace)'}
+           </button>
+           
+           {showConnect && (
+             <div className="mt-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
+               <label className="block text-xs text-gray-600 mb-1">ID Týmu</label>
+               <div className="flex gap-2">
+                 <input 
+                   type="text" 
+                   value={projectIdInput}
+                   onChange={e => setProjectIdInput(e.target.value)}
+                   className="flex-1 text-xs border border-gray-300 rounded px-2 py-1"
+                   placeholder="Vložte ID..."
+                 />
+                 <button 
+                   onClick={handleConnect}
+                   className="bg-indigo-600 text-white text-xs px-3 py-1 rounded hover:bg-indigo-700"
+                 >
+                   Uložit
+                 </button>
+               </div>
+             </div>
+           )}
         </div>
       </div>
     </div>
@@ -115,21 +153,56 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [events, setEvents] = useState<CateringEvent[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [projectId, setProjectId] = useState<string | null>(null);
   
   // Navigation State
-  const [view, setView] = useState<'LIST' | 'CREATE_EVENT' | 'EDIT_EVENT' | 'INVENTORY_LIST' | 'INVENTORY_EDIT'>('LIST');
+  const [view, setView] = useState<'LIST' | 'CREATE_EVENT' | 'EDIT_EVENT' | 'INVENTORY_LIST' | 'INVENTORY_EDIT' | 'EVENT_PROCESS'>('LIST');
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [activeInventoryId, setActiveInventoryId] = useState<string | null>(null);
 
   // Initialize
   useEffect(() => {
-    const user = AuthService.getCurrentUser();
-    if (user) {
-      setCurrentUser(user);
-    }
+    const initApp = async () => {
+      setIsLoading(true);
+
+      // Check URL for shared team ID
+      const urlParams = new URLSearchParams(window.location.search);
+      const teamIdFromUrl = urlParams.get('teamId');
+      if (teamIdFromUrl) {
+        StorageService.setProjectId(teamIdFromUrl);
+        // Clean up URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
+      await StorageService.init();
+      const user = AuthService.getCurrentUser();
+      if (user) {
+        setCurrentUser(user);
+      }
+      setProjectId(StorageService.getProjectId());
+      refreshData();
+      setIsLoading(false);
+    };
+    initApp();
   }, []);
 
+  // Background Sync Poll
+  useEffect(() => {
+    if (!currentUser || !projectId) return;
+
+    const interval = setInterval(async () => {
+      const changed = await StorageService.reload();
+      if (changed) {
+        refreshData();
+      }
+    }, 5000); // Poll every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [currentUser, projectId]);
+
   const refreshData = () => {
+    // These are now sync calls reading from cached memory
     setEvents(StorageService.getEvents().sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()));
     setInventory(StorageService.getInventory());
   };
@@ -147,6 +220,25 @@ export default function App() {
     setActiveEventId(null);
   };
 
+  const handleShare = () => {
+    if (!projectId) return;
+    const url = `${window.location.origin}${window.location.pathname}?teamId=${projectId}`;
+    navigator.clipboard.writeText(url).then(() => {
+      alert("Odkaz na váš tým byl zkopírován do schránky. Pošlete ho kolegům.");
+    });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-500">Načítám sklad...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return <LoginScreen onLogin={() => setCurrentUser(AuthService.getCurrentUser())} />;
   }
@@ -156,9 +248,9 @@ export default function App() {
     inventory,
     onAdd: () => { setActiveInventoryId(null); setView('INVENTORY_EDIT'); },
     onEdit: (id: string) => { setActiveInventoryId(id); setView('INVENTORY_EDIT'); },
-    onDelete: (id: string) => {
+    onDelete: async (id: string) => {
       if(window.confirm('Opravdu smazat tuto položku z inventáře?')) {
-        StorageService.deleteInventoryItem(id);
+        await StorageService.deleteInventoryItem(id);
         refreshData();
       }
     }
@@ -198,10 +290,28 @@ export default function App() {
             <div className="bg-indigo-600 p-2 rounded-lg text-white">
               <Icons.Box />
             </div>
-            <h1 className="text-xl font-bold text-gray-900 tracking-tight hidden sm:block">CaterLogix</h1>
+            <div className="hidden sm:block">
+              <h1 className="text-xl font-bold text-gray-900 tracking-tight leading-none">CaterLogix</h1>
+              {projectId && (
+                <div className="text-[10px] text-gray-400 font-mono flex items-center gap-1" title="ID Týmu">
+                  ID: {projectId.slice(0, 8)}...
+                </div>
+              )}
+            </div>
           </div>
           
           <div className="flex items-center gap-4">
+            
+             {projectId && (
+               <button 
+                 onClick={handleShare}
+                 className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full hover:bg-indigo-100 transition-colors border border-indigo-100"
+                 title="Zkopírovat odkaz pro kolegy"
+               >
+                 <Icons.Share /> Pozvat kolegy
+               </button>
+             )}
+
              <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-50 rounded-full border border-gray-100">
                <img src={currentUser.avatarUrl} alt="" className="w-8 h-8 rounded-full bg-gray-200" />
                <div className="hidden md:block">
@@ -245,6 +355,8 @@ export default function App() {
             inventory={inventory}
             onDataChange={refreshData}
             inventoryViewProps={inventoryViewProps}
+            activeEventId={activeEventId}
+            setActiveEventId={setActiveEventId}
           />
         )}
       </main>
@@ -462,42 +574,26 @@ function InventoryManager({ inventory, onAdd, onEdit, onDelete }: any) {
               const stats = StorageService.getItemStats(item.id);
               
               return (
-                <tr key={item.id} className="hover:bg-gray-50">
+                <tr key={item.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 whitespace-nowrap">
-                     <div className="h-10 w-10 rounded-md bg-gray-100 overflow-hidden border border-gray-200">
-                        {item.imageUrl ? (
-                          <img src={item.imageUrl} alt="" className="h-full w-full object-cover" />
-                        ) : (
-                          <div className="flex items-center justify-center h-full text-gray-400">
-                             <Icons.Image />
-                          </div>
-                        )}
-                     </div>
+                    {item.imageUrl ? (
+                        <img src={item.imageUrl} alt="" className="h-10 w-10 rounded-md object-cover bg-gray-100" />
+                    ) : (
+                        <div className="h-10 w-10 rounded-md bg-gray-100 flex items-center justify-center text-gray-400">
+                          <Icons.Image />
+                        </div>
+                    )}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm font-medium text-gray-900">{item.name}</div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
-                      {item.category}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-green-700 bg-green-50/30">
-                    {stats.available} ks
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-orange-600 bg-orange-50/30">
-                    {stats.onAction} ks
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-gray-900 bg-gray-50/50">
-                    {item.totalQuantity} ks
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium flex justify-end gap-2">
-                    <button onClick={() => onEdit(item.id)} className="text-indigo-600 hover:text-indigo-900 bg-indigo-50 p-1.5 rounded-md">
-                      <Icons.Edit />
-                    </button>
-                    <button onClick={() => onDelete(item.id)} className="text-red-600 hover:text-red-900 bg-red-50 p-1.5 rounded-md">
-                      <Icons.Trash />
-                    </button>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.name}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.category}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600 text-right">{stats.available} ks</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-orange-600 text-right">{stats.onAction} ks</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900 text-right bg-gray-50">{stats.total} ks</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <div className="flex justify-end gap-2">
+                        <button onClick={() => onEdit(item.id)} className="text-indigo-600 hover:text-indigo-900 p-1"><Icons.Edit /></button>
+                        <button onClick={() => onDelete(item.id)} className="text-red-600 hover:text-red-900 p-1"><Icons.Trash /></button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -510,378 +606,364 @@ function InventoryManager({ inventory, onAdd, onEdit, onDelete }: any) {
 }
 
 function InventoryEditor({ initialData, onCancel, onSave }: any) {
-  const [formData, setFormData] = useState<Partial<InventoryItem>>({
-    name: '',
-    category: ItemCategory.OTHER,
-    totalQuantity: 0,
-    imageUrl: '',
-    ...initialData
-  });
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setFormData(prev => ({ ...prev, imageUrl: reader.result as string }));
-      };
-      reader.readAsDataURL(file);
+  const [formData, setFormData] = useState<Partial<InventoryItem>>(
+    initialData || {
+      name: '',
+      category: ItemCategory.FURNITURE,
+      totalQuantity: 0,
+      imageUrl: ''
     }
-  };
+  );
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || formData.totalQuantity === undefined) return;
 
-    const itemToSave: InventoryItem = {
-      id: initialData?.id || crypto.randomUUID(),
+    const item: InventoryItem = {
+      id: initialData?.id || Date.now().toString(),
       name: formData.name,
-      category: formData.category || ItemCategory.OTHER,
-      totalQuantity: formData.totalQuantity,
+      category: formData.category || ItemCategory.FURNITURE,
+      totalQuantity: Number(formData.totalQuantity),
       imageUrl: formData.imageUrl
     };
 
-    StorageService.saveInventoryItem(itemToSave);
+    await StorageService.saveInventoryItem(item);
     onSave();
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 max-w-2xl mx-auto">
-      <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-xl">
-        <h3 className="text-lg font-bold text-gray-900">
-          {initialData ? 'Upravit Položku' : 'Nová Položka'}
-        </h3>
-        <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">✕</button>
-      </div>
-
-      <form onSubmit={handleSubmit} className="p-6 space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Název položky *</label>
-          <input 
-            type="text"
-            required
-            className="w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 border p-2"
-            value={formData.name}
-            onChange={e => setFormData({...formData, name: e.target.value})}
-            placeholder="Např. Talíř hluboký"
-          />
+    <div className="max-w-2xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+            <h2 className="text-lg font-bold text-gray-900">{initialData ? 'Upravit položku' : 'Nová položka'}</h2>
+            <button onClick={onCancel} className="text-gray-400 hover:text-gray-500">✕</button>
         </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Kategorie</label>
-            <select
-              className="w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 border p-2"
-              value={formData.category}
-              onChange={e => setFormData({...formData, category: e.target.value as ItemCategory})}
-            >
-              {Object.values(ItemCategory).map(cat => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-500 mt-1">
-               {formData.category === ItemCategory.DISHES ? 'Nádobí: +2 dny na úklid po akci.' : 
-                formData.category === ItemCategory.FURNITURE ? 'Nábytek: Ihned k dispozici.' : 'Ostatní: +1 den buffer.'}
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Celkový počet (ks) *</label>
-            <input 
-              type="number"
-              required
-              min="0"
-              className="w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 border p-2"
-              value={formData.totalQuantity}
-              onChange={e => setFormData({...formData, totalQuantity: parseInt(e.target.value) || 0})}
-            />
-          </div>
-        </div>
-
-        <div>
-           <label className="block text-sm font-medium text-gray-700 mb-1">Obrázek</label>
-           
-           <div className="space-y-3">
-             {/* Local Upload */}
-             <div className="flex items-center gap-3">
-                <label className="cursor-pointer bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 flex items-center gap-2 shadow-sm">
-                   <Icons.Upload /> Nahrát soubor
-                   <input 
-                      type="file" 
-                      accept="image/*" 
-                      className="hidden" 
-                      onChange={handleImageUpload}
-                   />
-                </label>
-                <span className="text-xs text-gray-400">nebo</span>
-                {/* URL Input */}
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+            <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Název</label>
                 <input 
-                  type="text"
-                  className="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 border p-2 text-sm"
-                  value={formData.imageUrl || ''}
-                  onChange={e => setFormData({...formData, imageUrl: e.target.value})}
-                  placeholder="Vložit URL obrázku..."
+                  required
+                  type="text" 
+                  value={formData.name}
+                  onChange={e => setFormData({...formData, name: e.target.value})}
+                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
                 />
-             </div>
-           </div>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Kategorie</label>
+                    <select
+                      value={formData.category}
+                      onChange={e => setFormData({...formData, category: e.target.value as ItemCategory})}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+                    >
+                        {Object.values(ItemCategory).map(c => (
+                            <option key={c} value={c}>{c}</option>
+                        ))}
+                    </select>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Množství na skladě</label>
+                    <input 
+                      required
+                      type="number" 
+                      min="0"
+                      value={formData.totalQuantity}
+                      onChange={e => setFormData({...formData, totalQuantity: parseInt(e.target.value) || 0})}
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+                    />
+                </div>
+            </div>
 
-           {formData.imageUrl && (
-             <div className="mt-3 relative w-32 h-32 rounded-lg border border-gray-200 overflow-hidden bg-gray-50 group">
-               <img src={formData.imageUrl} alt="Náhled" className="w-full h-full object-cover" onError={(e) => (e.target as HTMLImageElement).src = ''} />
-               <button 
-                  type="button"
-                  onClick={() => setFormData({...formData, imageUrl: ''})}
-                  className="absolute top-1 right-1 bg-white/90 p-1 rounded-full text-gray-600 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
-               >
-                 <Icons.Trash />
-               </button>
-             </div>
-           )}
-        </div>
+            <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">URL Obrázku (volitelné)</label>
+                <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={formData.imageUrl || ''}
+                      onChange={e => setFormData({...formData, imageUrl: e.target.value})}
+                      className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+                      placeholder="https://..."
+                    />
+                    {formData.imageUrl && (
+                        <img src={formData.imageUrl} alt="Preview" className="h-10 w-10 rounded object-cover border border-gray-200" />
+                    )}
+                </div>
+            </div>
 
-        <div className="pt-4 flex justify-end gap-3 border-t border-gray-100 mt-6">
-          <button type="button" onClick={onCancel} className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50">
-            Zrušit
-          </button>
-          <button type="submit" className="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 shadow-sm">
-            Uložit
-          </button>
-        </div>
-      </form>
+            <div className="pt-4 flex justify-end gap-3">
+                <button type="button" onClick={onCancel} className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">Zrušit</button>
+                <button type="submit" className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700">Uložit</button>
+            </div>
+        </form>
     </div>
   );
 }
 
 function EventEditor({ initialData, inventory, onCancel, onSave, currentUser }: any) {
-  const [formData, setFormData] = useState<Partial<CateringEvent>>({
-    name: '',
-    startDate: new Date().toISOString().split('T')[0],
-    endDate: new Date().toISOString().split('T')[0],
-    status: EventStatus.PLANNED,
-    items: [],
-    ...initialData
-  });
-
-  const [selectedCategory, setSelectedCategory] = useState<ItemCategory | 'ALL'>('ALL');
-
-  const updateItemQuantity = (itemId: string, qty: number) => {
-    const currentItems = [...(formData.items || [])];
-    const idx = currentItems.findIndex(i => i.itemId === itemId);
-    
-    if (qty <= 0) {
-      if (idx !== -1) currentItems.splice(idx, 1);
-    } else {
-      if (idx !== -1) {
-        currentItems[idx].quantity = qty;
-      } else {
-        currentItems.push({ itemId, quantity: qty });
-      }
+  const [formData, setFormData] = useState<Partial<CateringEvent>>(
+    initialData || {
+      name: '',
+      startDate: new Date().toISOString().split('T')[0],
+      endDate: new Date().toISOString().split('T')[0],
+      status: EventStatus.PLANNED,
+      items: [],
+      notes: ''
     }
-    setFormData({ ...formData, items: currentItems });
+  );
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState<ItemCategory | 'ALL'>('ALL');
+
+  const handleAddItem = (inventoryItem: InventoryItem) => {
+    const existing = formData.items?.find((i: EventItem) => i.itemId === inventoryItem.id);
+    if (existing) return; // Already added
+
+    const newItem: EventItem = { itemId: inventoryItem.id, quantity: 1 };
+    setFormData({
+        ...formData,
+        items: [...(formData.items || []), newItem]
+    });
   };
 
-  const handleSave = (status: EventStatus) => {
-    const eventToSave: CateringEvent = {
-      id: initialData?.id || crypto.randomUUID(),
-      name: formData.name!,
-      startDate: formData.startDate!,
-      endDate: formData.endDate!,
-      status: status,
-      items: formData.items || [],
-      // Keep existing creator if editing, otherwise assign current user
-      createdById: initialData?.createdById || currentUser.id,
-      createdByName: initialData?.createdByName || currentUser.name
+  const handleRemoveItem = (itemId: string) => {
+      setFormData({
+          ...formData,
+          items: formData.items?.filter((i: EventItem) => i.itemId !== itemId) || []
+      });
+  };
+
+  const handleQuantityChange = (itemId: string, qty: number, max: number) => {
+      setFormData({
+          ...formData,
+          items: formData.items?.map((i: EventItem) => i.itemId === itemId ? { ...i, quantity: qty } : i) || []
+      });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.name || !formData.startDate || !formData.endDate) return;
+
+    const event: CateringEvent = {
+        id: initialData?.id || Date.now().toString(),
+        name: formData.name!,
+        startDate: formData.startDate!,
+        endDate: formData.endDate!,
+        status: formData.status || EventStatus.PLANNED,
+        items: formData.items || [],
+        notes: formData.notes,
+        createdById: initialData?.createdById || currentUser.id,
+        createdByName: initialData?.createdByName || currentUser.name
     };
 
     if (initialData) {
-      StorageService.updateEvent(eventToSave);
+        await StorageService.updateEvent(event);
     } else {
-      StorageService.addEvent(eventToSave);
+        await StorageService.addEvent(event);
     }
     onSave();
   };
 
-  const categories = ['ALL', ...Object.values(ItemCategory)];
-
-  // Calculate availability for each item dynamically
-  const inventoryWithAvailability = useMemo(() => {
-    if (!formData.startDate || !formData.endDate) return inventory.map((i: any) => ({...i, available: i.totalQuantity}));
-    
-    return inventory.map((item: InventoryItem) => {
-      const available = StorageService.checkAvailability(item.id, formData.startDate!, formData.endDate!, initialData?.id);
-      return { ...item, available };
-    });
-  }, [inventory, formData.startDate, formData.endDate, initialData]);
-
-  const filteredInventory = selectedCategory === 'ALL' 
-    ? inventoryWithAvailability 
-    : inventoryWithAvailability.filter((i: any) => i.category === selectedCategory);
+  const availableInventory = inventory.filter((item: InventoryItem) => {
+      const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesCategory = categoryFilter === 'ALL' || item.category === categoryFilter;
+      return matchesSearch && matchesCategory;
+  });
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-      <div className="border-b border-gray-200 p-6">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-bold text-gray-900">{initialData ? 'Upravit Akci' : 'Nová Akce'}</h2>
-          <button onClick={onCancel} className="text-gray-500 hover:text-gray-700">Zavřít</button>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="md:col-span-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Název akce</label>
-            <input 
-              type="text" 
-              className="w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 border p-2"
-              value={formData.name}
-              onChange={e => setFormData({...formData, name: e.target.value})}
-              placeholder="Např. Svatba Novákovi"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Datum od</label>
-            <input 
-              type="date" 
-              className="w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 border p-2"
-              value={formData.startDate}
-              onChange={e => setFormData({...formData, startDate: e.target.value})}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Datum do</label>
-            <input 
-              type="date" 
-              className="w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 border p-2"
-              value={formData.endDate}
-              onChange={e => setFormData({...formData, endDate: e.target.value})}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="p-6 bg-gray-50 min-h-[400px]">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-gray-900">Výběr inventáře</h3>
-          <div className="flex gap-2">
-            {categories.map((cat: any) => (
-              <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                  selectedCategory === cat 
-                    ? 'bg-indigo-600 text-white' 
-                    : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
-                }`}
-              >
-                {cat === 'ALL' ? 'Vše' : cat}
-              </button>
-            ))}
-          </div>
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-120px)]">
+        <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-xl">
+            <h2 className="text-lg font-bold text-gray-900">{initialData ? 'Upravit akci' : 'Naplánovat akci'}</h2>
+            <div className="flex gap-2">
+                <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded">Zrušit</button>
+                <button onClick={handleSubmit} className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow-sm">Uložit Akci</button>
+            </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredInventory.map((item: any) => {
-            const inCart = formData.items?.find(i => i.itemId === item.id);
-            const qty = inCart ? inCart.quantity : 0;
-            const isOutOfStock = item.available <= 0 && qty === 0;
-
-            return (
-              <div key={item.id} className={`bg-white p-4 rounded-lg border shadow-sm flex gap-4 ${isOutOfStock ? 'opacity-60' : ''} ${qty > 0 ? 'ring-2 ring-indigo-500 border-indigo-500' : 'border-gray-200'}`}>
-                <img src={item.imageUrl} alt={item.name} className="w-16 h-16 object-cover rounded-md bg-gray-100" />
-                <div className="flex-1">
-                  <div className="flex justify-between items-start">
-                    <h4 className="font-medium text-sm text-gray-900">{item.name}</h4>
-                    {item.category === ItemCategory.DISHES && (
-                      <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded" title="Nutné mytí po akci (buffer +2 dny)">mytí</span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Dostupné: <span className={`font-bold ${item.available < 10 ? 'text-red-600' : 'text-green-600'}`}>{item.available}</span> / {item.totalQuantity} ks
-                  </p>
-                  
-                  <div className="mt-3 flex items-center">
-                    <button 
-                      onClick={() => updateItemQuantity(item.id, qty - 1)}
-                      disabled={qty <= 0}
-                      className="w-7 h-7 flex items-center justify-center rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50"
-                    >-</button>
-                    <input 
-                      type="number" 
-                      min="0"
-                      max={item.available}
-                      className="w-16 mx-2 text-center border-gray-300 rounded-md text-sm p-1"
-                      value={qty}
-                      onChange={(e) => updateItemQuantity(item.id, parseInt(e.target.value) || 0)}
-                    />
-                    <button 
-                      onClick={() => updateItemQuantity(item.id, qty + 1)}
-                      disabled={qty >= item.available}
-                      className="w-7 h-7 flex items-center justify-center rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50"
-                    >+</button>
-                  </div>
+        <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
+            {/* Left Panel: Event Details & Selected Items */}
+            <div className="w-full md:w-1/3 border-r border-gray-200 overflow-y-auto p-4 space-y-4 bg-gray-50/50">
+                <div className="space-y-3">
+                    <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Název akce</label>
+                        <input 
+                           type="text" 
+                           className="w-full p-2 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500" 
+                           value={formData.name}
+                           onChange={e => setFormData({...formData, name: e.target.value})}
+                           placeholder="Svatba Novákovi..."
+                        />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                         <div>
+                            <label className="block text-xs font-medium text-gray-500 mb-1">Od</label>
+                            <input 
+                                type="date" 
+                                className="w-full p-2 text-sm border border-gray-300 rounded"
+                                value={formData.startDate}
+                                onChange={e => setFormData({...formData, startDate: e.target.value})}
+                            />
+                         </div>
+                         <div>
+                            <label className="block text-xs font-medium text-gray-500 mb-1">Do</label>
+                            <input 
+                                type="date" 
+                                className="w-full p-2 text-sm border border-gray-300 rounded"
+                                value={formData.endDate}
+                                onChange={e => setFormData({...formData, endDate: e.target.value})}
+                            />
+                         </div>
+                    </div>
+                    <div>
+                         <label className="block text-xs font-medium text-gray-500 mb-1">Status</label>
+                         <select 
+                            className="w-full p-2 text-sm border border-gray-300 rounded"
+                            value={formData.status}
+                            onChange={e => setFormData({...formData, status: e.target.value as EventStatus})}
+                         >
+                            <option value={EventStatus.PLANNED}>Naplánováno (Draft)</option>
+                            <option value={EventStatus.RESERVED}>Rezervováno (Blokuje sklad)</option>
+                         </select>
+                    </div>
+                     <div>
+                        <label className="block text-xs font-medium text-gray-500 mb-1">Poznámky</label>
+                        <textarea 
+                           className="w-full p-2 text-sm border border-gray-300 rounded h-20" 
+                           value={formData.notes || ''}
+                           onChange={e => setFormData({...formData, notes: e.target.value})}
+                        />
+                    </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
 
-      <div className="p-6 border-t border-gray-200 flex justify-between items-center bg-gray-50">
-        <div className="text-sm text-gray-500">
-          Celkem položek: <span className="font-bold text-gray-900">{formData.items?.reduce((acc, i) => acc + i.quantity, 0)}</span>
+                <div className="pt-4 border-t border-gray-200">
+                    <h3 className="font-medium text-sm text-gray-900 mb-2">Vybrané položky ({formData.items?.length})</h3>
+                    <div className="space-y-2">
+                        {formData.items?.length === 0 && <p className="text-xs text-gray-400 italic">Zatím žádné položky.</p>}
+                        {formData.items?.map((item: EventItem) => {
+                            const invItem = inventory.find((i: any) => i.id === item.itemId);
+                            if (!invItem) return null;
+                            const available = StorageService.checkAvailability(invItem.id, formData.startDate!, formData.endDate!, initialData?.id);
+                            
+                            const isOverbooked = item.quantity > available;
+
+                            return (
+                                <div key={item.itemId} className="bg-white p-2 rounded border border-gray-200 shadow-sm text-sm">
+                                    <div className="flex justify-between items-start mb-1">
+                                        <span className="font-medium text-gray-800">{invItem.name}</span>
+                                        <button onClick={() => handleRemoveItem(item.itemId)} className="text-gray-400 hover:text-red-500">×</button>
+                                    </div>
+                                    <div className="flex items-center justify-between mt-2">
+                                        <div className="text-xs text-gray-500">
+                                            Dostupné: <span className={isOverbooked ? "text-red-600 font-bold" : "text-green-600"}>{available}</span>
+                                        </div>
+                                        <input 
+                                            type="number" 
+                                            min="1"
+                                            className={`w-20 p-1 text-right border rounded text-sm ${isOverbooked ? 'border-red-300 bg-red-50 text-red-900' : 'border-gray-300'}`}
+                                            value={item.quantity}
+                                            onChange={e => handleQuantityChange(item.itemId, parseInt(e.target.value) || 0, available)}
+                                        />
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            </div>
+
+            {/* Right Panel: Item Picker */}
+            <div className="flex-1 p-4 flex flex-col bg-white overflow-hidden">
+                <div className="flex gap-2 mb-4">
+                     <input 
+                        type="text" 
+                        placeholder="Hledat vybavení..." 
+                        className="flex-1 p-2 border border-gray-300 rounded text-sm"
+                        value={searchTerm}
+                        onChange={e => setSearchTerm(e.target.value)}
+                     />
+                     <select 
+                        className="p-2 border border-gray-300 rounded text-sm"
+                        value={categoryFilter}
+                        onChange={e => setCategoryFilter(e.target.value as any)}
+                     >
+                         <option value="ALL">Všechny kategorie</option>
+                         {Object.values(ItemCategory).map(c => <option key={c} value={c}>{c}</option>)}
+                     </select>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto grid grid-cols-2 lg:grid-cols-3 gap-3 content-start">
+                    {availableInventory.map((item: InventoryItem) => {
+                         const available = StorageService.checkAvailability(item.id, formData.startDate!, formData.endDate!, initialData?.id);
+                         const isAdded = formData.items?.some((i: EventItem) => i.itemId === item.id);
+
+                         return (
+                             <button 
+                                key={item.id}
+                                disabled={isAdded || available <= 0}
+                                onClick={() => handleAddItem(item)}
+                                className={`flex flex-col text-left p-3 rounded-lg border transition-all ${
+                                    isAdded 
+                                    ? 'border-indigo-200 bg-indigo-50 opacity-60' 
+                                    : available <= 0 
+                                      ? 'border-gray-100 bg-gray-50 opacity-50 cursor-not-allowed'
+                                      : 'border-gray-200 hover:border-indigo-300 hover:shadow-md bg-white'
+                                }`}
+                             >
+                                 <div className="flex items-start gap-3 mb-2">
+                                    {item.imageUrl ? (
+                                        <img src={item.imageUrl} className="w-10 h-10 rounded object-cover bg-gray-100" />
+                                    ) : (
+                                        <div className="w-10 h-10 rounded bg-gray-100 flex items-center justify-center text-gray-400"><Icons.Box /></div>
+                                    )}
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-medium text-sm text-gray-900 truncate" title={item.name}>{item.name}</div>
+                                        <div className="text-xs text-gray-500">{item.category}</div>
+                                    </div>
+                                 </div>
+                                 <div className="mt-auto flex justify-between items-center w-full">
+                                    <div className="text-xs">
+                                        Volno: <span className={available > 0 ? 'font-bold text-gray-700' : 'text-red-500'}>{available}</span>
+                                        <span className="text-gray-400 mx-1">/</span>
+                                        <span className="text-gray-400">{item.totalQuantity}</span>
+                                    </div>
+                                    {!isAdded && available > 0 && <span className="text-indigo-600 font-bold text-lg leading-none">+</span>}
+                                 </div>
+                             </button>
+                         );
+                    })}
+                </div>
+            </div>
         </div>
-        <div className="flex gap-3">
-          <button 
-            onClick={() => handleSave(EventStatus.PLANNED)}
-            className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50"
-          >
-            Uložit jako koncept
-          </button>
-          <button 
-            onClick={() => handleSave(EventStatus.RESERVED)}
-            disabled={!formData.name || !formData.startDate}
-            className="px-4 py-2 text-white bg-indigo-600 rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Rezervovat
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
 
-// --- Warehouse Views ---
-
-function WarehouseView({ view, setView, events, inventory, onDataChange, inventoryViewProps }: any) {
-  const [activeTab, setActiveTab] = useState<'TASKS' | 'INVENTORY'>('TASKS');
-  const [selectedEvent, setSelectedEvent] = useState<CateringEvent | null>(null);
-  const [mode, setMode] = useState<'ISSUE' | 'RETURN' | null>(null);
-
-  // Filter only relevant events for warehouse
-  const activeEvents = events.filter((e: CateringEvent) => 
-    e.status === EventStatus.RESERVED || e.status === EventStatus.ISSUED
-  );
-
-  if (selectedEvent && mode) {
-    return (
-      <WarehouseAction 
-        event={selectedEvent} 
-        mode={mode} 
-        inventory={inventory}
-        onCancel={() => { setSelectedEvent(null); setMode(null); }}
-        onComplete={() => {
-          setSelectedEvent(null);
-          setMode(null);
-          onDataChange();
-        }}
-      />
-    );
+function WarehouseView({ view, setView, events, inventory, onDataChange, inventoryViewProps, activeEventId, setActiveEventId }: any) {
+  const [activeTab, setActiveTab] = useState<'DISPATCH' | 'INVENTORY'>('DISPATCH');
+  const warehouseEvents = events.filter((e: CateringEvent) => e.status !== EventStatus.RETURNED);
+  
+  if (view === 'EVENT_PROCESS') {
+     return (
+         <WarehouseProcess 
+            event={events.find((e:any) => e.id === activeEventId)} 
+            inventory={inventory}
+            onBack={() => { setView('LIST'); setActiveEventId(null); }}
+            onSave={async () => {
+                onDataChange();
+                setView('LIST');
+                setActiveEventId(null);
+            }}
+         />
+     );
   }
 
   return (
     <div className="space-y-6">
        <div className="flex border-b border-gray-200">
         <button
-          onClick={() => setActiveTab('TASKS')}
+          onClick={() => setActiveTab('DISPATCH')}
           className={`py-4 px-6 font-medium text-sm focus:outline-none border-b-2 transition-colors ${
-            activeTab === 'TASKS' 
+            activeTab === 'DISPATCH' 
               ? 'border-indigo-600 text-indigo-600' 
               : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
           }`}
@@ -896,219 +978,168 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
               : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
           }`}
         >
-          Správa Skladu
+          Skladové zásoby
         </button>
       </div>
 
-      {activeTab === 'TASKS' ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stav</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Akce</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Termín</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Položky</th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Akce skladu</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {activeEvents.map((event: CateringEvent) => (
-                <tr key={event.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <StatusBadge status={event.status} />
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm font-medium text-gray-900">{event.name}</div>
-                    <div className="text-xs text-gray-500 mt-1">Vytvořil: {event.createdByName}</div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {new Date(event.startDate).toLocaleDateString('cs-CZ')}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {event.items.length} typů
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    {event.status === EventStatus.RESERVED && (
-                      <button 
-                        onClick={() => { setSelectedEvent(event); setMode('ISSUE'); }}
-                        className="text-indigo-600 hover:text-indigo-900 bg-indigo-50 px-3 py-1 rounded-md"
-                      >
-                        Vydat
-                      </button>
-                    )}
-                    {event.status === EventStatus.ISSUED && (
-                      <button 
-                        onClick={() => { setSelectedEvent(event); setMode('RETURN'); }}
-                        className="text-green-600 hover:text-green-900 bg-green-50 px-3 py-1 rounded-md"
-                      >
-                        Příjem / Vrátit
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {activeEvents.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
-                    Žádné akce k výdeji ani příjmu.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      ) : (
+      {activeTab === 'INVENTORY' ? (
         <InventoryManager {...inventoryViewProps} />
+      ) : (
+        <div className="space-y-4">
+            <h2 className="text-lg font-bold text-gray-900">Plánované akce</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+                {warehouseEvents.map((event: CateringEvent) => {
+                    const isToday = new Date(event.startDate).toDateString() === new Date().toDateString();
+                    
+                    return (
+                        <div key={event.id} className={`bg-white rounded-xl border p-5 shadow-sm hover:shadow-md transition-all ${isToday ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-gray-200'}`}>
+                            <div className="flex justify-between items-start mb-3">
+                                <StatusBadge status={event.status} />
+                                <span className="text-xs font-mono text-gray-400">#{event.id.slice(-4)}</span>
+                            </div>
+                            <h3 className="font-bold text-gray-900 text-lg mb-1">{event.name}</h3>
+                            <div className="text-sm text-gray-500 flex items-center gap-2 mb-4">
+                                <Icons.Calendar />
+                                {new Date(event.startDate).toLocaleDateString('cs-CZ')}
+                                {isToday && <span className="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-bold animate-pulse">DNES</span>}
+                            </div>
+                            
+                            <div className="space-y-2 pt-4 border-t border-gray-100">
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-gray-600">Položek k přípravě:</span>
+                                    <span className="font-medium">{event.items.reduce((a, b) => a + b.quantity, 0)} ks</span>
+                                </div>
+                                
+                                <div className="flex gap-2 mt-4">
+                                    <button 
+                                        onClick={() => downloadEventCSV(event, inventory)}
+                                        className="flex-1 bg-white border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 flex items-center justify-center gap-2"
+                                    >
+                                        <Icons.Download /> Seznam
+                                    </button>
+                                    
+                                    {event.status === EventStatus.RESERVED && (
+                                        <button 
+                                            onClick={() => { setActiveEventId(event.id); setView('EVENT_PROCESS'); }}
+                                            className="flex-1 bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 flex items-center justify-center gap-2"
+                                        >
+                                            <Icons.Truck /> Vydat ze skladu
+                                        </button>
+                                    )}
+
+                                    {event.status === EventStatus.ISSUED && (
+                                        <button 
+                                            onClick={() => { setActiveEventId(event.id); setView('EVENT_PROCESS'); }}
+                                            className="flex-1 bg-green-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-700 flex items-center justify-center gap-2"
+                                        >
+                                            <Icons.Check /> Přijmout vratku
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })}
+                {warehouseEvents.length === 0 && (
+                    <div className="col-span-full py-12 text-center text-gray-400 bg-white rounded-xl border border-dashed border-gray-300">
+                        Žádné akce k vyřízení.
+                    </div>
+                )}
+            </div>
+        </div>
       )}
     </div>
   );
 }
 
-function WarehouseAction({ event, mode, inventory, onCancel, onComplete }: any) {
-  // Deep copy items for editing
-  const [items, setItems] = useState<EventItem[]>(JSON.parse(JSON.stringify(event.items)));
+function WarehouseProcess({ event, inventory, onBack, onSave }: any) {
+    const [items, setItems] = useState<EventItem[]>(JSON.parse(JSON.stringify(event.items)));
+    const isReturning = event.status === EventStatus.ISSUED;
 
-  const handleIssue = () => {
-    // Save any qty adjustments
-    const updatedEvent = { ...event, status: EventStatus.ISSUED, items };
-    StorageService.updateEvent(updatedEvent);
-    onComplete();
-  };
+    const handleReturnCount = (itemId: string, val: number) => {
+        setItems(items.map(i => i.itemId === itemId ? { ...i, returnedQuantity: val } : i));
+    };
 
-  const handleReturn = () => {
-    const updatedEvent = { ...event, items };
-    // This calculates losses and updates main inventory
-    StorageService.closeEvent(updatedEvent);
-    onComplete();
-  };
+    const handleProcess = async () => {
+        if (!isReturning) {
+            // Issuing
+            const updated = { ...event, status: EventStatus.ISSUED };
+            await StorageService.updateEvent(updated);
+        } else {
+            // Returning
+            const updated = { ...event, items: items };
+            await StorageService.closeEvent(updated);
+        }
+        onSave();
+    };
 
-  const updateReturnCounts = (itemId: string, field: 'returnedQuantity' | 'brokenQuantity', val: number) => {
-    const newItems = [...items];
-    const idx = newItems.findIndex(i => i.itemId === itemId);
-    if (idx !== -1) {
-      newItems[idx][field] = val;
-    }
-    setItems(newItems);
-  };
-
-  const totalIssued = items.reduce((acc, i) => acc + i.quantity, 0);
-
-  return (
-    <div className="bg-white rounded-xl shadow-lg border border-gray-200 max-w-4xl mx-auto">
-      <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-xl">
-        <div>
-          <h3 className="text-lg font-bold text-gray-900">
-            {mode === 'ISSUE' ? 'Výdej inventáře' : 'Příjem vratky'}
-          </h3>
-          <p className="text-sm text-gray-500">{event.name}</p>
-        </div>
-        <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">✕</button>
-      </div>
-
-      <div className="p-6">
-        <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-6 text-sm text-blue-800 flex gap-3">
-          <Icons.Alert />
-          <div>
-            {mode === 'ISSUE' 
-              ? 'Zkontrolujte počty položek. Pokud vydáváte jiné množství než bylo rezervováno, upravte číslo "Vydáno".'
-              : 'Vyplňte počty vrácených (v pořádku) a rozbitých kusů. Chybějící kusy systém dopočítá automaticky.'
-            }
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          {items.map((item, idx) => {
-            const invItem = inventory.find((i: any) => i.id === item.itemId);
-            if (!invItem) return null;
-
-            return (
-              <div key={item.itemId} className="flex items-center p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors">
-                <img src={invItem.imageUrl} className="w-12 h-12 rounded object-cover mr-4 bg-gray-200" alt="" />
-                <div className="flex-1">
-                  <h4 className="font-medium text-gray-900">{invItem.name}</h4>
-                  <p className="text-xs text-gray-500">{invItem.category}</p>
+    return (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-120px)]">
+             <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-xl">
+                <div>
+                    <h2 className="text-lg font-bold text-gray-900">
+                        {isReturning ? 'Příjem vratky (Uzavření akce)' : 'Výdej ze skladu'}
+                    </h2>
+                    <p className="text-xs text-gray-500">{event.name}</p>
                 </div>
-
-                {mode === 'ISSUE' ? (
-                  <div className="flex items-center gap-3">
-                    <label className="text-xs font-semibold text-gray-500 uppercase">K výdeji:</label>
-                    <input 
-                      type="number"
-                      min="0"
-                      className="w-20 border-gray-300 rounded-md p-1 text-center font-bold text-lg"
-                      value={item.quantity}
-                      onChange={(e) => {
-                        const newItems = [...items];
-                        newItems[idx].quantity = parseInt(e.target.value) || 0;
-                        setItems(newItems);
-                      }}
-                    />
-                    <span className="text-gray-500">ks</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-6">
-                    <div className="text-center">
-                      <div className="text-xs text-gray-500 mb-1">Vydáno</div>
-                      <div className="font-bold text-lg">{item.quantity}</div>
-                    </div>
-                    
-                    <div className="flex flex-col">
-                      <label className="text-xs text-green-600 font-bold mb-1">Vráceno (OK)</label>
-                      <input 
-                        type="number"
-                        min="0"
-                        className="w-24 border-green-300 focus:ring-green-500 rounded-md p-1 text-center"
-                        value={item.returnedQuantity ?? item.quantity} // Default to full return
-                        onChange={(e) => updateReturnCounts(item.itemId, 'returnedQuantity', parseInt(e.target.value) || 0)}
-                      />
-                    </div>
-
-                    <div className="flex flex-col">
-                      <label className="text-xs text-red-600 font-bold mb-1">Rozbito</label>
-                      <input 
-                        type="number"
-                        min="0"
-                        className="w-20 border-red-300 focus:ring-red-500 rounded-md p-1 text-center"
-                        value={item.brokenQuantity ?? 0}
-                        onChange={(e) => updateReturnCounts(item.itemId, 'brokenQuantity', parseInt(e.target.value) || 0)}
-                      />
-                    </div>
-
-                    <div className="text-center w-16">
-                      <div className="text-xs text-gray-400 mb-1">Chybí</div>
-                      <div className="font-bold text-gray-400">
-                        {Math.max(0, item.quantity - (item.returnedQuantity ?? item.quantity) - (item.brokenQuantity ?? 0))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                <div className="flex gap-2">
+                    <button onClick={onBack} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded">Zpět</button>
+                    <button onClick={handleProcess} className={`px-4 py-1.5 text-sm text-white rounded shadow-sm ${isReturning ? 'bg-green-600 hover:bg-green-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+                        {isReturning ? 'Uzavřít a naskladnit' : 'Potvrdit výdej'}
+                    </button>
+                </div>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4">
+                 <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                        <tr>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Položka</th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Vydáno</th>
+                            {isReturning && (
+                                <>
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Vráceno OK</th>
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Rozbito/Ztraceno</th>
+                                </>
+                            )}
+                        </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                        {items.map((item) => {
+                             const invItem = inventory.find((i:any) => i.id === item.itemId);
+                             return (
+                                 <tr key={item.itemId}>
+                                     <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                         {invItem?.name || 'Neznámá'}
+                                     </td>
+                                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 text-right">
+                                         {item.quantity} ks
+                                     </td>
+                                     {isReturning && (
+                                         <>
+                                             <td className="px-4 py-4 whitespace-nowrap text-right">
+                                                 <input 
+                                                    type="number" 
+                                                    min="0"
+                                                    max={item.quantity}
+                                                    className="w-20 border-gray-300 rounded text-right text-sm p-1 border"
+                                                    value={item.returnedQuantity ?? item.quantity} // Default to all returned OK
+                                                    onChange={e => handleReturnCount(item.itemId, parseInt(e.target.value) || 0)}
+                                                 />
+                                             </td>
+                                             <td className="px-4 py-4 whitespace-nowrap text-right">
+                                                  <div className="text-sm text-red-600 font-medium">
+                                                      {Math.max(0, item.quantity - (item.returnedQuantity ?? item.quantity))} ks
+                                                  </div>
+                                             </td>
+                                         </>
+                                     )}
+                                 </tr>
+                             );
+                        })}
+                    </tbody>
+                 </table>
+            </div>
         </div>
-      </div>
-
-      <div className="px-6 py-4 bg-gray-50 rounded-b-xl flex justify-end gap-3 border-t border-gray-200">
-        <button onClick={onCancel} className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-100">
-          Zrušit
-        </button>
-        {mode === 'ISSUE' ? (
-          <button 
-            onClick={handleIssue}
-            className="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 shadow-sm flex items-center gap-2"
-          >
-            <Icons.Check /> Potvrdit Výdej ({totalIssued} ks)
-          </button>
-        ) : (
-          <button 
-            onClick={handleReturn}
-            className="px-6 py-2 bg-green-600 text-white rounded-lg text-sm font-bold hover:bg-green-700 shadow-sm flex items-center gap-2"
-          >
-            <Icons.Check /> Uzavřít a Naskladnit
-          </button>
-        )}
-      </div>
-    </div>
-  );
+    );
 }
