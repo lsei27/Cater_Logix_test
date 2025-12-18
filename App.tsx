@@ -69,17 +69,29 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const users = AuthService.getAvailableUsers();
   const [projectIdInput, setProjectIdInput] = useState('');
   const [showConnect, setShowConnect] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const handleUserSelect = (userId: string) => {
     AuthService.login(userId);
     onLogin();
   };
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     if (projectIdInput.trim()) {
+      setIsInitializing(true);
+      setErrorMsg('');
       StorageService.setProjectId(projectIdInput.trim());
-      alert("Tým nastaven. Přihlaste se.");
-      setShowConnect(false);
+      
+      const success = await StorageService.init();
+      setIsInitializing(false);
+      
+      if (success) {
+        setShowConnect(false);
+        alert("Úspěšně připojeno k týmu!");
+      } else {
+        setErrorMsg("Nepodařilo se připojit k týmu. Zkontrolujte ID nebo internet.");
+      }
     }
   };
 
@@ -131,14 +143,17 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
                    onChange={e => setProjectIdInput(e.target.value)}
                    className="flex-1 text-xs border border-gray-300 rounded px-2 py-1"
                    placeholder="Vložte ID..."
+                   disabled={isInitializing}
                  />
                  <button 
                    onClick={handleConnect}
-                   className="bg-indigo-600 text-white text-xs px-3 py-1 rounded hover:bg-indigo-700"
+                   disabled={isInitializing}
+                   className="bg-indigo-600 text-white text-xs px-3 py-1 rounded hover:bg-indigo-700 disabled:opacity-50"
                  >
-                   Uložit
+                   {isInitializing ? '...' : 'Uložit'}
                  </button>
                </div>
+               {errorMsg && <p className="text-xs text-red-500 mt-2">{errorMsg}</p>}
              </div>
            )}
         </div>
@@ -154,7 +169,9 @@ export default function App() {
   const [events, setEvents] = useState<CateringEvent[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isError, setIsError] = useState(false);
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState(false);
   
   // Navigation State
   const [view, setView] = useState<'LIST' | 'CREATE_EVENT' | 'EDIT_EVENT' | 'INVENTORY_LIST' | 'INVENTORY_EDIT' | 'EVENT_PROCESS'>('LIST');
@@ -165,44 +182,55 @@ export default function App() {
   useEffect(() => {
     const initApp = async () => {
       setIsLoading(true);
+      setIsError(false);
 
       // Check URL for shared team ID
       const urlParams = new URLSearchParams(window.location.search);
       const teamIdFromUrl = urlParams.get('teamId');
       if (teamIdFromUrl) {
         StorageService.setProjectId(teamIdFromUrl);
-        // Clean up URL
         window.history.replaceState({}, document.title, window.location.pathname);
       }
 
-      await StorageService.init();
-      const user = AuthService.getCurrentUser();
-      if (user) {
-        setCurrentUser(user);
+      const success = await StorageService.init();
+      
+      if (success) {
+        const user = AuthService.getCurrentUser();
+        if (user) {
+            setCurrentUser(user);
+        }
+        setProjectId(StorageService.getProjectId());
+        setIsOnline(StorageService.isConnected());
+        refreshData();
+        setIsLoading(false);
+      } else {
+         // If initialization fails completely (no cloud)
+         setIsError(true);
+         setIsLoading(false);
       }
-      setProjectId(StorageService.getProjectId());
-      refreshData();
-      setIsLoading(false);
     };
     initApp();
+
+    // Subscribe to updates
+    const unsubscribe = StorageService.subscribe(() => {
+        refreshData();
+        setIsOnline(StorageService.isConnected());
+    });
+    return () => unsubscribe();
   }, []);
 
-  // Background Sync Poll
+  // Aggressive Background Sync Poll (Every 2s to simulate Real-Time)
   useEffect(() => {
     if (!currentUser || !projectId) return;
 
     const interval = setInterval(async () => {
-      const changed = await StorageService.reload();
-      if (changed) {
-        refreshData();
-      }
-    }, 5000); // Poll every 5 seconds
+      await StorageService.reload();
+    }, 2000); 
 
     return () => clearInterval(interval);
   }, [currentUser, projectId]);
 
   const refreshData = () => {
-    // These are now sync calls reading from cached memory
     setEvents(StorageService.getEvents().sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()));
     setInventory(StorageService.getInventory());
   };
@@ -228,14 +256,42 @@ export default function App() {
     });
   };
 
+  const retryConnection = () => {
+    window.location.reload();
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-500">Načítám sklad...</p>
+          <p className="text-gray-500">Připojuji se ke skladu...</p>
         </div>
       </div>
+    );
+  }
+
+  if (isError) {
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+            <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center">
+                <div className="mx-auto w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mb-4">
+                    <Icons.Alert />
+                </div>
+                <h2 className="text-xl font-bold text-gray-900 mb-2">Chyba připojení</h2>
+                <p className="text-gray-500 mb-6">
+                    Nepodařilo se připojit ke cloudovému úložišti. Pro fungování aplikace je nutné internetové připojení.
+                    <br/><br/>
+                    Pokud používáte AdBlock, zkuste ho pro tuto stránku vypnout.
+                </p>
+                <button 
+                    onClick={retryConnection}
+                    className="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 font-medium"
+                >
+                    Zkusit znovu
+                </button>
+            </div>
+        </div>
     );
   }
 
@@ -292,11 +348,15 @@ export default function App() {
             </div>
             <div className="hidden sm:block">
               <h1 className="text-xl font-bold text-gray-900 tracking-tight leading-none">CaterLogix</h1>
-              {projectId && (
-                <div className="text-[10px] text-gray-400 font-mono flex items-center gap-1" title="ID Týmu">
-                  ID: {projectId.slice(0, 8)}...
-                </div>
-              )}
+              <div className="flex items-center gap-2 mt-0.5">
+                  <div className="text-[10px] text-gray-400 font-mono flex items-center gap-1" title="ID Týmu">
+                    ID: {projectId?.slice(0, 8)}...
+                  </div>
+                  <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${isOnline ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      <div className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`}></div>
+                      {isOnline ? 'Online' : 'Offline'}
+                  </div>
+              </div>
             </div>
           </div>
           

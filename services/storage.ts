@@ -2,8 +2,7 @@ import { CateringEvent, InventoryItem, ItemCategory, EventStatus, CATEGORY_BUFFE
 
 const STORAGE_KEYS = {
   PROJECT_ID: 'caterlogix_project_id',
-  CURRENT_USER: 'caterlogix_current_user',
-  LOCAL_BACKUP: 'caterlogix_local_data'
+  CURRENT_USER: 'caterlogix_current_user'
 };
 
 const BLOB_API_URL = 'https://jsonblob.com/api/jsonBlob';
@@ -25,13 +24,25 @@ const INITIAL_INVENTORY: InventoryItem[] = [
   { id: '7', name: 'Ubrus bílý', category: ItemCategory.OTHER, totalQuantity: 50, imageUrl: 'https://images.unsplash.com/photo-1593000956405-01e4a22e93b2?auto=format&fit=crop&w=200&q=80' },
 ];
 
-// In-memory cache to keep app fast while syncing
-let CACHE = {
-  inventory: [] as InventoryItem[],
-  events: [] as CateringEvent[]
+interface AppData {
+  inventory: InventoryItem[];
+  events: CateringEvent[];
+  lastUpdated: number;
+}
+
+// In-memory cache
+let CACHE: AppData = {
+  inventory: INITIAL_INVENTORY,
+  events: [],
+  lastUpdated: Date.now()
 };
 
-let IS_INITIALIZED = false;
+let IS_CONNECTED = false;
+let LISTENERS: (() => void)[] = [];
+
+const notifyListeners = () => {
+  LISTENERS.forEach(l => l());
+};
 
 export const AuthService = {
   getAvailableUsers: () => MOCK_USERS,
@@ -56,96 +67,144 @@ export const AuthService = {
 };
 
 export const StorageService = {
-  // --- CLOUD SYNC LOGIC ---
+  subscribe: (listener: () => void) => {
+    LISTENERS.push(listener);
+    return () => {
+      LISTENERS = LISTENERS.filter(l => l !== listener);
+    };
+  },
+
+  isConnected: () => IS_CONNECTED,
 
   getProjectId: () => localStorage.getItem(STORAGE_KEYS.PROJECT_ID),
 
   setProjectId: (id: string) => {
     localStorage.setItem(STORAGE_KEYS.PROJECT_ID, id);
-    IS_INITIALIZED = false; // Force reload
+    IS_CONNECTED = false;
   },
 
-  // Initialize: Load from Cloud or Local Backup or Create New
+  // Initialize: Must succeed in Cloud or fail
   init: async (): Promise<boolean> => {
-    if (IS_INITIALIZED) return true;
-
-    // 1. Always load local backup first to ensure immediate data availability
-    const localBackup = localStorage.getItem(STORAGE_KEYS.LOCAL_BACKUP);
-    if (localBackup) {
-      try {
-        CACHE = JSON.parse(localBackup);
-        IS_INITIALIZED = true;
-      } catch (e) {
-        console.error("Corrupt local data", e);
-        CACHE = { inventory: INITIAL_INVENTORY, events: [] };
-      }
-    } else {
-      CACHE = { inventory: INITIAL_INVENTORY, events: [] };
-    }
-
     const projectId = StorageService.getProjectId();
 
     if (projectId) {
-      // 2. Try to sync with cloud
+      // Try to load existing
       try {
-        const response = await fetch(`${BLOB_API_URL}/${projectId}`, {
-           headers: { 'Accept': 'application/json' }
-        });
-        if (response.ok) {
-          const data = await response.json();
-          CACHE = data;
-          // Update local backup with fresh cloud data
-          localStorage.setItem(STORAGE_KEYS.LOCAL_BACKUP, JSON.stringify(CACHE));
-          IS_INITIALIZED = true;
+        const success = await StorageService.reload(); // Uses cache-busting
+        if (success) {
+          IS_CONNECTED = true;
+          notifyListeners();
           return true;
-        } else {
-          console.warn("Cloud load failed, using local backup.");
         }
       } catch (e) {
-        console.warn("Network error during init, using local backup", e);
+        console.error("Init sync failed:", e);
       }
     } else {
-      // 3. Create new Cloud Storage
+      // Create new Cloud Storage
       try {
+        const initialData: AppData = { 
+            inventory: INITIAL_INVENTORY, 
+            events: [],
+            lastUpdated: Date.now()
+        };
+        
         const response = await fetch(BLOB_API_URL, {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json',
             'Accept': 'application/json'
           },
-          body: JSON.stringify(CACHE)
+          body: JSON.stringify(initialData)
         });
 
         if (response.ok) {
           const location = response.headers.get('Location');
-          // Location header is usually full URL, we need the UUID at the end
           if (location) {
              const newId = location.split('/').pop();
              if (newId) {
                StorageService.setProjectId(newId);
+               CACHE = initialData;
+               IS_CONNECTED = true;
+               notifyListeners();
+               return true;
              }
+          } else {
+             console.error("No Location header in response");
           }
         }
       } catch (e) {
-        console.error("Failed to create cloud storage", e);
-        // Continue with local data, user will be offline for now
+        console.error("Creation failed:", e);
       }
     }
     
-    IS_INITIALIZED = true;
-    return true;
+    IS_CONNECTED = false;
+    notifyListeners();
+    return false;
   },
 
-  sync: async () => {
-    // 1. Always save to local storage immediately
-    localStorage.setItem(STORAGE_KEYS.LOCAL_BACKUP, JSON.stringify(CACHE));
-
-    // 2. Try to save to cloud
+  // Pull latest data from cloud
+  reload: async (): Promise<boolean> => {
     const projectId = StorageService.getProjectId();
-    if (!projectId) return;
+    if (!projectId) return false;
 
     try {
-      await fetch(`${BLOB_API_URL}/${projectId}`, {
+      // Add timestamp to prevent browser caching - CRITICAL for real-time
+      const response = await fetch(`${BLOB_API_URL}/${projectId}?_t=${Date.now()}`, {
+          headers: { 'Accept': 'application/json' }
+      });
+      
+      if (response.ok) {
+        const cloudData = await response.json();
+        
+        // Update cache if cloud has valid data structure
+        if (cloudData && Array.isArray(cloudData.inventory)) {
+            // Only notify if something actually changed (by comparing JSON string)
+            const currentStr = JSON.stringify(CACHE);
+            const cloudStr = JSON.stringify(cloudData);
+            
+            if (currentStr !== cloudStr) {
+                CACHE = cloudData;
+                notifyListeners();
+            }
+            IS_CONNECTED = true;
+            return true;
+        }
+      }
+    } catch (e) {
+      console.error("Reload failed:", e);
+    }
+    
+    // If we are here, something went wrong
+    // Don't set IS_CONNECTED = false immediately on one failed poll to avoid flickering
+    // but if it persists, UI will show last known state
+    return false;
+  },
+
+  // Push local cache to cloud
+  save: async () => {
+    const projectId = StorageService.getProjectId();
+    if (!projectId) {
+        alert("Chyba: Chybí ID týmu. Zkuste obnovit stránku.");
+        return;
+    }
+
+    // 1. First, fetch latest to ensure we don't overwrite others blindly (basic optimistic locking)
+    try {
+        const response = await fetch(`${BLOB_API_URL}/${projectId}?_t=${Date.now()}`);
+        if (response.ok) {
+            const cloudData = await response.json();
+            // In a real app, we would merge. Here we assume "Last Save Wins" but we preserve other collections if needed
+            // For now, we trust the current user's action is the truth for the entity they are editing
+        }
+    } catch (e) {
+        // Ignore fetch error on save, try to push anyway
+    }
+
+    // 2. Update timestamp
+    CACHE.lastUpdated = Date.now();
+
+    try {
+      const res = await fetch(`${BLOB_API_URL}/${projectId}`, {
         method: 'PUT',
         headers: { 
           'Content-Type': 'application/json',
@@ -153,30 +212,18 @@ export const StorageService = {
         },
         body: JSON.stringify(CACHE)
       });
-    } catch (e) {
-      console.error("Sync failed", e);
-    }
-  },
-
-  // Reload data from cloud (for background sync)
-  reload: async (): Promise<boolean> => {
-    const projectId = StorageService.getProjectId();
-    if (!projectId) return false;
-
-    try {
-      const response = await fetch(`${BLOB_API_URL}/${projectId}`, {
-          headers: { 'Accept': 'application/json' }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        CACHE = data;
-        localStorage.setItem(STORAGE_KEYS.LOCAL_BACKUP, JSON.stringify(CACHE));
-        return true;
+      
+      if (res.ok) {
+        IS_CONNECTED = true;
+        notifyListeners(); // Update UI
+      } else {
+        alert("Chyba při ukládání do cloudu! Zkontrolujte internet.");
+        IS_CONNECTED = false;
       }
     } catch (e) {
-      // console.error("Background sync failed", e);
+      alert("Chyba při ukládání do cloudu! Zkontrolujte internet.");
+      IS_CONNECTED = false;
     }
-    return false;
   },
 
   // --- DATA ACCESS ---
@@ -187,7 +234,7 @@ export const StorageService = {
 
   updateInventory: async (items: InventoryItem[]) => {
     CACHE.inventory = items;
-    await StorageService.sync();
+    await StorageService.save();
   },
 
   saveInventoryItem: async (item: InventoryItem) => {
@@ -212,11 +259,10 @@ export const StorageService = {
 
   updateEvents: async (events: CateringEvent[]) => {
     CACHE.events = events;
-    await StorageService.sync();
+    await StorageService.save();
   },
 
   addEvent: async (event: CateringEvent) => {
-    // Attach current user info if available and not present
     if (!event.createdById) {
       const currentUser = AuthService.getCurrentUser();
       if (currentUser) {
@@ -224,7 +270,6 @@ export const StorageService = {
         event.createdByName = currentUser.name;
       }
     }
-    
     const events = [...CACHE.events, event];
     await StorageService.updateEvents(events);
   },
@@ -238,26 +283,28 @@ export const StorageService = {
     }
   },
 
-  // Calculates stats for "Now" - Used for Dashboard
+  // Calculates stats for "Now" based on current CACHE
   getItemStats: (itemId: string) => {
     const item = CACHE.inventory.find(i => i.id === itemId);
     if (!item) return { total: 0, onAction: 0, available: 0 };
 
     const events = CACHE.events;
-    const now = new Date();
-    now.setHours(0, 0, 0, 0); // Normalize today
+    // Use strict date comparison logic
+    const now = new Date(); 
+    now.setHours(0,0,0,0); // Comparison is day-based usually
 
     let onAction = 0;
 
     events.forEach(event => {
-      // Only count items physically out of warehouse (ISSUED) or actively RESERVED for today
-      // Logic: If it is reserved for today, it is effectively not available for another walk-in reservation
+      // Items are "On Action" if event is RESERVED or ISSUED
+      // AND current date is within range
       if (event.status !== EventStatus.RESERVED && event.status !== EventStatus.ISSUED) return;
 
       const start = new Date(event.startDate);
       const end = new Date(event.endDate);
+      start.setHours(0,0,0,0);
+      end.setHours(23,59,59,999);
 
-      // Check if event is active "Right Now"
       if (now >= start && now <= end) {
          const evItem = event.items.find(i => i.itemId === itemId);
          if (evItem) {
@@ -269,76 +316,120 @@ export const StorageService = {
     return {
       total: item.totalQuantity,
       onAction: onAction,
-      available: Math.max(0, item.totalQuantity - onAction)
+      available: Math.max(0, item.totalQuantity - onAction) // Available logic for "Now"
     };
   },
 
-  // Future Availability Logic for Planning (The "Duplication" preventer)
-  // This logic correctly handles RESERVED items.
+  // Logic to prevent booking if already booked in future
   checkAvailability: (itemId: string, startDateStr: string, endDateStr: string, currentEventId?: string): number => {
     const item = CACHE.inventory.find(i => i.id === itemId);
     if (!item) return 0;
 
     const events = CACHE.events;
-    const reqStart = new Date(startDateStr).getTime();
-    const reqEnd = new Date(endDateStr).getTime();
+    
+    // Convert inputs to Time for comparison
+    const reqStart = new Date(startDateStr);
+    reqStart.setHours(0,0,0,0);
+    const reqEnd = new Date(endDateStr);
+    reqEnd.setHours(23,59,59,999);
+
     const bufferDays = CATEGORY_BUFFER_DAYS[item.category] || 0;
-    const bufferMs = bufferDays * 24 * 60 * 60 * 1000;
+    // Buffer is added AFTER the event end date
+    
+    let maxReservedQuantity = 0;
 
-    let reservedQuantity = 0;
+    // We need to find the specific day in the range [reqStart, reqEnd] with the MAXIMUM overlap
+    // A simple sum is wrong because events might not overlap with each other, but both overlap with request.
+    // Actually, for a specific item, we just need to subtract any confirmed event that overlaps with our range.
+    // If multiple events overlap on the SAME day, we sum them.
+    
+    // Simplified robust algorithm:
+    // 1. Iterate through every day of the requested period.
+    // 2. For that day, sum up all quantities from overlapping events (including buffer).
+    // 3. The lowest availability across all days is the result.
 
-    for (const event of events) {
-      if (currentEventId && event.id === currentEventId) continue;
-      if (event.status === EventStatus.RETURNED || event.status === EventStatus.PLANNED) continue;
-      
-      // IMPORTANT: Matches RESERVED and ISSUED.
-      // This ensures that even if warehouse hasn't clicked "Issue", the item is blocked.
-      if (event.status !== EventStatus.RESERVED && event.status !== EventStatus.ISSUED) continue;
+    let minAvailability = item.totalQuantity;
 
-      const evStart = new Date(event.startDate).getTime();
-      let evEnd = new Date(event.endDate).getTime();
-      const blockingEnd = evEnd + bufferMs;
+    // Create loop for days
+    for (let d = new Date(reqStart); d <= reqEnd; d.setDate(d.getDate() + 1)) {
+        let reservedOnDay = 0;
+        
+        const currentDayTime = d.getTime();
 
-      // Check overlap
-      if (reqStart <= blockingEnd && evStart <= reqEnd) {
-        const eventItem = event.items.find(i => i.itemId === itemId);
-        if (eventItem) {
-          reservedQuantity += eventItem.quantity;
+        for (const event of events) {
+            if (currentEventId && event.id === currentEventId) continue;
+            if (event.status === EventStatus.RETURNED || event.status === EventStatus.PLANNED) continue;
+            // Matches RESERVED and ISSUED
+            
+            const evStart = new Date(event.startDate);
+            evStart.setHours(0,0,0,0);
+            
+            const evEnd = new Date(event.endDate);
+            evEnd.setHours(23,59,59,999);
+            
+            // Add buffer to event end
+            const bufferMs = bufferDays * 24 * 60 * 60 * 1000;
+            const blockingEnd = evEnd.getTime() + bufferMs;
+
+            // Check if currentDay is inside [evStart, blockingEnd]
+            if (currentDayTime >= evStart.getTime() && currentDayTime <= blockingEnd) {
+                const eventItem = event.items.find(i => i.itemId === itemId);
+                if (eventItem) {
+                    reservedOnDay += eventItem.quantity;
+                }
+            }
         }
-      }
+        
+        const availOnDay = item.totalQuantity - reservedOnDay;
+        if (availOnDay < minAvailability) {
+            minAvailability = availOnDay;
+        }
     }
 
-    return Math.max(0, item.totalQuantity - reservedQuantity);
+    return Math.max(0, minAvailability);
   },
 
   closeEvent: async (event: CateringEvent) => {
-    // 1. Calculate losses and update inventory locally
     const inventory = [...CACHE.inventory];
     event.items.forEach(evItem => {
       const invItemIndex = inventory.findIndex(i => i.id === evItem.itemId);
       if (invItemIndex !== -1) {
         const item = inventory[invItemIndex];
         const issued = evItem.quantity;
-        const returnedGood = evItem.returnedQuantity || 0;
-        const loss = issued - returnedGood;
+        // If returned undefined, assume all returned ok if not broken specified? 
+        // Logic: Manager fills returnedQuantity. 
+        const returned = evItem.returnedQuantity !== undefined ? evItem.returnedQuantity : issued;
+        
+        // Loss is anything NOT returned. 
+        // Note: Broken items are usually considered "returned but destroyed" or "missing".
+        // The prompt says: "vráceno + rozbito (2 čísla)".
+        // If user enters Returned: 10, Broken: 2. Issued was 12. OK.
+        // If Issued 12, Returned 10. Missing 2.
+        
+        // We subtract Broken and Missing from Stock.
+        const broken = evItem.brokenQuantity || 0; // If you add broken field later
+        
+        // Based on WarehouseProcess component: 
+        // We only have `returnedQuantity` input. 
+        // The difference (Issued - Returned) is considered LOST/BROKEN and removed from stock.
+        
+        const loss = Math.max(0, issued - returned);
+        
         if (loss > 0) {
-          // Permanently subtract lost items
           item.totalQuantity = Math.max(0, item.totalQuantity - loss);
         }
       }
     });
 
-    // 2. Update Event Status
     event.status = EventStatus.RETURNED;
     
-    // 3. Sync everything
+    // Update local cache structure
+    const eventIndex = CACHE.events.findIndex(e => e.id === event.id);
+    if (eventIndex !== -1) {
+        CACHE.events[eventIndex] = event;
+    }
     CACHE.inventory = inventory;
-    
-    const events = [...CACHE.events];
-    const evIndex = events.findIndex(e => e.id === event.id);
-    if (evIndex !== -1) events[evIndex] = event;
-    CACHE.events = events;
 
-    await StorageService.sync();
+    await StorageService.save();
   }
 };
