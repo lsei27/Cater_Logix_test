@@ -17,7 +17,8 @@ const Icons = {
   Logout: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>,
   Upload: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>,
   Cloud: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>,
-  Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
+  Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>,
+  Shield: () => <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
 };
 
 // --- Helper Functions ---
@@ -90,7 +91,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
         setShowConnect(false);
         alert("Úspěšně připojeno k týmu!");
       } else {
-        setErrorMsg("Nepodařilo se připojit k týmu. Zkontrolujte ID nebo internet.");
+        setErrorMsg("ID týmu nebylo nalezeno nebo selhalo připojení.");
       }
     }
   };
@@ -130,7 +131,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
              onClick={() => setShowConnect(!showConnect)}
              className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center justify-center gap-1 w-full"
            >
-             <Icons.Cloud /> {showConnect ? 'Skrýt nastavení' : 'Připojit k existujícímu týmu (synchronizace)'}
+             <Icons.Cloud /> {showConnect ? 'Skrýt nastavení' : 'Připojit k existujícímu týmu'}
            </button>
            
            {showConnect && (
@@ -172,6 +173,7 @@ export default function App() {
   const [isError, setIsError] = useState(false);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(false);
+  const [isProxy, setIsProxy] = useState(false);
   
   // Navigation State
   const [view, setView] = useState<'LIST' | 'CREATE_EVENT' | 'EDIT_EVENT' | 'INVENTORY_LIST' | 'INVENTORY_EDIT' | 'EVENT_PROCESS'>('LIST');
@@ -184,7 +186,6 @@ export default function App() {
       setIsLoading(true);
       setIsError(false);
 
-      // Check URL for shared team ID
       const urlParams = new URLSearchParams(window.location.search);
       const teamIdFromUrl = urlParams.get('teamId');
       if (teamIdFromUrl) {
@@ -201,32 +202,30 @@ export default function App() {
         }
         setProjectId(StorageService.getProjectId());
         setIsOnline(StorageService.isConnected());
+        setIsProxy(StorageService.isUsingProxy());
         refreshData();
         setIsLoading(false);
       } else {
-         // If initialization fails completely (no cloud)
          setIsError(true);
          setIsLoading(false);
       }
     };
     initApp();
 
-    // Subscribe to updates
     const unsubscribe = StorageService.subscribe(() => {
         refreshData();
         setIsOnline(StorageService.isConnected());
+        setIsProxy(StorageService.isUsingProxy());
     });
     return () => unsubscribe();
   }, []);
 
-  // Aggressive Background Sync Poll (Every 2s to simulate Real-Time)
   useEffect(() => {
     if (!currentUser || !projectId) return;
-
+    // Fast polling for realtime feel
     const interval = setInterval(async () => {
       await StorageService.reload();
     }, 2000); 
-
     return () => clearInterval(interval);
   }, [currentUser, projectId]);
 
@@ -265,7 +264,8 @@ export default function App() {
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-500">Připojuji se ke skladu...</p>
+          <p className="text-gray-500 font-medium">Startuji CaterLogix...</p>
+          <p className="text-xs text-gray-400 mt-2">Zkouším přímé připojení a proxy...</p>
         </div>
       </div>
     );
@@ -280,9 +280,9 @@ export default function App() {
                 </div>
                 <h2 className="text-xl font-bold text-gray-900 mb-2">Chyba připojení</h2>
                 <p className="text-gray-500 mb-6">
-                    Nepodařilo se připojit ke cloudovému úložišti. Pro fungování aplikace je nutné internetové připojení.
+                    Ani po několika pokusech se nepodařilo spojit se serverem.
                     <br/><br/>
-                    Pokud používáte AdBlock, zkuste ho pro tuto stránku vypnout.
+                    Aplikace vyžaduje aktivní internetové připojení pro synchronizaci dat.
                 </p>
                 <button 
                     onClick={retryConnection}
@@ -299,7 +299,6 @@ export default function App() {
     return <LoginScreen onLogin={() => setCurrentUser(AuthService.getCurrentUser())} />;
   }
 
-  // Common View Props for handling Add/Edit Inventory from anywhere
   const inventoryViewProps = {
     inventory,
     onAdd: () => { setActiveInventoryId(null); setView('INVENTORY_EDIT'); },
@@ -312,7 +311,6 @@ export default function App() {
     }
   };
 
-  // Handle Inventory Edit View Globally (since both roles can access it now)
   if (view === 'INVENTORY_EDIT') {
     const existingItem = activeInventoryId ? inventory.find((i: any) => i.id === activeInventoryId) : null;
     return (
@@ -339,7 +337,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
-      {/* Top Navigation */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -356,12 +353,16 @@ export default function App() {
                       <div className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`}></div>
                       {isOnline ? 'Online' : 'Offline'}
                   </div>
+                  {isProxy && (
+                      <div className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase bg-blue-50 text-blue-600" title="Připojeno přes Proxy (Bezpečný režim)">
+                         <Icons.Shield /> Proxy
+                      </div>
+                  )}
               </div>
             </div>
           </div>
           
           <div className="flex items-center gap-4">
-            
              {projectId && (
                <button 
                  onClick={handleShare}
@@ -371,7 +372,6 @@ export default function App() {
                  <Icons.Share /> Pozvat kolegy
                </button>
              )}
-
              <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-50 rounded-full border border-gray-100">
                <img src={currentUser.avatarUrl} alt="" className="w-8 h-8 rounded-full bg-gray-200" />
                <div className="hidden md:block">
@@ -381,7 +381,6 @@ export default function App() {
                  </div>
                </div>
              </div>
-             
              <button 
                onClick={handleLogout}
                className="p-2 text-gray-500 hover:text-red-600 transition-colors"
@@ -393,7 +392,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
         {currentUser.role === UserRole.MANAGER ? (
           <ManagerView 
@@ -427,12 +425,9 @@ export default function App() {
 // --- Manager Views ---
 
 function ManagerView({ view, setView, events, inventory, activeEventId, setActiveEventId, onDataChange, currentUser, inventoryViewProps }: any) {
-  
-  // Tab Switcher for Managers
   const [activeTab, setActiveTab] = useState<'EVENTS' | 'INVENTORY'>('EVENTS');
   const [eventFilter, setEventFilter] = useState<'ALL' | 'MINE'>('ALL');
 
-  // Handle specific views outside the tab logic
   if (view === 'CREATE_EVENT' || view === 'EDIT_EVENT') {
     const existingEvent = activeEventId ? events.find((e: any) => e.id === activeEventId) : null;
     return (
@@ -456,7 +451,6 @@ function ManagerView({ view, setView, events, inventory, activeEventId, setActiv
     return true;
   });
 
-  // Dashboard View with Tabs
   return (
     <div className="space-y-6">
       <div className="flex border-b border-gray-200">
@@ -630,7 +624,6 @@ function InventoryManager({ inventory, onAdd, onEdit, onDelete }: any) {
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredInventory.map((item: InventoryItem) => {
-              // Calculate live stats
               const stats = StorageService.getItemStats(item.id);
               
               return (

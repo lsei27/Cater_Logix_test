@@ -6,6 +6,10 @@ const STORAGE_KEYS = {
 };
 
 const BLOB_API_URL = 'https://jsonblob.com/api/jsonBlob';
+// Primary Proxy
+const PROXY_URL = 'https://corsproxy.io/?'; 
+// Backup Proxy (if primary fails to return headers or connect)
+const BACKUP_PROXY_URL = 'https://thingproxy.freeboard.io/fetch/';
 
 // Mock Users Database
 const MOCK_USERS: User[] = [
@@ -13,6 +17,33 @@ const MOCK_USERS: User[] = [
   { id: 'u2', name: 'Bob Dvořák', role: UserRole.MANAGER, avatarUrl: 'https://ui-avatars.com/api/?name=Bob+Dvorak&background=8b5cf6&color=fff' },
   { id: 'u3', name: 'Karel Skladník', role: UserRole.WAREHOUSE, avatarUrl: 'https://ui-avatars.com/api/?name=Karel+Skladnik&background=10b981&color=fff' },
 ];
+
+export const AuthService = {
+  getAvailableUsers: (): User[] => MOCK_USERS,
+
+  login: (userId: string) => {
+    const user = MOCK_USERS.find(u => u.id === userId);
+    if (user) {
+      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
+    }
+  },
+
+  logout: () => {
+    localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+  },
+
+  getCurrentUser: (): User | null => {
+    const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+};
 
 const INITIAL_INVENTORY: InventoryItem[] = [
   { id: '1', name: 'Bistro stůl vysoký', category: ItemCategory.FURNITURE, totalQuantity: 20, imageUrl: 'https://images.unsplash.com/photo-1533090481720-856c6e3c1fdc?auto=format&fit=crop&w=200&q=80' },
@@ -38,32 +69,59 @@ let CACHE: AppData = {
 };
 
 let IS_CONNECTED = false;
+let USE_PROXY = false;
 let LISTENERS: (() => void)[] = [];
 
 const notifyListeners = () => {
   LISTENERS.forEach(l => l());
 };
 
-export const AuthService = {
-  getAvailableUsers: () => MOCK_USERS,
-  
-  login: (userId: string): User | null => {
-    const user = MOCK_USERS.find(u => u.id === userId);
-    if (user) {
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(user));
-      return user;
+// --- ROBUST NETWORK FETCH ---
+const robustFetch = async (url: string, options: RequestInit = {}) => {
+  const defaultOptions: RequestInit = {
+    ...options,
+    mode: 'cors',
+    credentials: 'omit',
+    referrerPolicy: 'no-referrer',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      ...options.headers,
     }
-    return null;
-  },
+  };
 
-  logout: () => {
-    localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
-  },
+  const tryRequest = async (targetUrl: string) => {
+    const response = await fetch(targetUrl, defaultOptions);
+    if (!response.ok) throw new Error(`Status ${response.status}`);
+    return response;
+  };
 
-  getCurrentUser: (): User | null => {
-    const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-    return stored ? JSON.parse(stored) : null;
+  try {
+    const target = USE_PROXY ? `${PROXY_URL}${encodeURIComponent(url)}` : url;
+    return await tryRequest(target);
+  } catch (directError) {
+    if (USE_PROXY) throw directError;
+
+    console.warn("Direct connection failed. Switching to Proxy Mode...");
+    try {
+      const proxyUrl = `${PROXY_URL}${encodeURIComponent(url)}`;
+      const response = await tryRequest(proxyUrl);
+      USE_PROXY = true; 
+      return response;
+    } catch (proxyError) {
+      console.error("Proxy connection also failed.", proxyError);
+      throw proxyError;
+    }
   }
+};
+
+const extractIdFromLocation = (location: string | null): string | null => {
+  if (!location) return null;
+  // Handle full URL or relative path
+  // Split by '/' and take the last non-empty segment
+  const parts = location.split('/').filter(p => p.trim().length > 0);
+  const id = parts.pop();
+  return id || null;
 };
 
 export const StorageService = {
@@ -75,6 +133,7 @@ export const StorageService = {
   },
 
   isConnected: () => IS_CONNECTED,
+  isUsingProxy: () => USE_PROXY,
 
   getProjectId: () => localStorage.getItem(STORAGE_KEYS.PROJECT_ID),
 
@@ -88,9 +147,15 @@ export const StorageService = {
     const projectId = StorageService.getProjectId();
 
     if (projectId) {
-      // Try to load existing
+      // Trying to connect to existing ID
+      if (projectId.startsWith('offline_')) {
+          IS_CONNECTED = false;
+          notifyListeners();
+          return true; // Valid initialization for offline mode
+      }
+
       try {
-        const success = await StorageService.reload(); // Uses cache-busting
+        const success = await StorageService.reload();
         if (success) {
           IS_CONNECTED = true;
           notifyListeners();
@@ -108,35 +173,89 @@ export const StorageService = {
             lastUpdated: Date.now()
         };
         
-        const response = await fetch(BLOB_API_URL, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify(initialData)
-        });
+        let location: string | null = null;
 
-        if (response.ok) {
-          const location = response.headers.get('Location');
-          if (location) {
-             const newId = location.split('/').pop();
-             if (newId) {
-               StorageService.setProjectId(newId);
-               CACHE = initialData;
-               IS_CONNECTED = true;
-               notifyListeners();
-               return true;
-             }
-          } else {
-             console.error("No Location header in response");
-          }
+        // 1. Try Standard Robust Fetch (Direct or Auto-Proxy)
+        try {
+            const response = await robustFetch(BLOB_API_URL, {
+                method: 'POST',
+                body: JSON.stringify(initialData)
+            });
+            location = response.headers.get('Location') || response.headers.get('location') || response.headers.get('x-jsonblob');
+        } catch (e) {
+            console.warn("Initial creation request failed", e);
+        }
+
+        // 2. If no location found, try fallback proxies explicitly
+        if (!location) {
+            console.warn("Location header missing or request failed. Retrying creation via Fallback Proxies...");
+            
+            const proxies = [
+                // 1. Primary Proxy (encoded)
+                (url: string) => `${PROXY_URL}${encodeURIComponent(url)}`,
+                // 2. Backup Proxy (direct append)
+                (url: string) => `${BACKUP_PROXY_URL}${url}`
+            ];
+
+            for (const createProxyUrl of proxies) {
+                if (location) break; 
+                try {
+                    const target = createProxyUrl(BLOB_API_URL);
+                    console.log("Attempting proxy:", target);
+                    
+                    const response = await fetch(target, {
+                        method: 'POST',
+                        credentials: 'omit',
+                        mode: 'cors',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        },
+                        body: JSON.stringify(initialData)
+                    });
+                    
+                    if (response.ok) {
+                        location = response.headers.get('Location') || 
+                                   response.headers.get('location') || 
+                                   response.headers.get('x-final-url') ||
+                                   response.headers.get('x-jsonblob');
+                                   
+                        if (location) {
+                            console.log("Recovered Location via proxy");
+                            // If primary proxy worked, set global use
+                            if (target.includes('corsproxy.io')) {
+                                USE_PROXY = true;
+                            }
+                        }
+                    }
+                } catch (proxyErr) {
+                    console.warn("Proxy attempt failed", proxyErr);
+                }
+            }
+        }
+        
+        // 3. Extract ID
+        let newId = extractIdFromLocation(location);
+
+        if (!newId) {
+            console.warn("Failed to extract ID from Cloud after all attempts. Switching to Offline Mode.");
+            // Fallback to Offline Mode to prevent app crash
+            newId = `offline_${Date.now()}`;
+        }
+
+        if (newId) {
+          StorageService.setProjectId(newId);
+          CACHE = initialData;
+          IS_CONNECTED = !newId.startsWith('offline_'); // Only connected if real cloud ID
+          notifyListeners();
+          return true;
         }
       } catch (e) {
-        console.error("Creation failed:", e);
+        console.error("Creation critical failure:", e);
       }
     }
     
+    // Final fallback if everything crashed
     IS_CONNECTED = false;
     notifyListeners();
     return false;
@@ -145,84 +264,60 @@ export const StorageService = {
   // Pull latest data from cloud
   reload: async (): Promise<boolean> => {
     const projectId = StorageService.getProjectId();
-    if (!projectId) return false;
+    if (!projectId || projectId.startsWith('offline_')) return false;
 
     try {
-      // Add timestamp to prevent browser caching - CRITICAL for real-time
-      const response = await fetch(`${BLOB_API_URL}/${projectId}?_t=${Date.now()}`, {
-          headers: { 'Accept': 'application/json' }
-      });
+      // Add cache buster
+      const response = await robustFetch(`${BLOB_API_URL}/${projectId}?_t=${Date.now()}`);
+      const cloudData = await response.json();
       
-      if (response.ok) {
-        const cloudData = await response.json();
-        
-        // Update cache if cloud has valid data structure
-        if (cloudData && Array.isArray(cloudData.inventory)) {
-            // Only notify if something actually changed (by comparing JSON string)
-            const currentStr = JSON.stringify(CACHE);
-            const cloudStr = JSON.stringify(cloudData);
-            
-            if (currentStr !== cloudStr) {
-                CACHE = cloudData;
-                notifyListeners();
-            }
-            IS_CONNECTED = true;
-            return true;
-        }
+      if (cloudData && Array.isArray(cloudData.inventory)) {
+          const currentStr = JSON.stringify(CACHE);
+          const cloudStr = JSON.stringify(cloudData);
+          
+          if (currentStr !== cloudStr) {
+              CACHE = cloudData;
+              notifyListeners();
+          }
+          IS_CONNECTED = true;
+          return true;
       }
     } catch (e) {
       console.error("Reload failed:", e);
+      // We don't necessarily set IS_CONNECTED to false here to avoid UI flickering on temporary network blips
     }
-    
-    // If we are here, something went wrong
-    // Don't set IS_CONNECTED = false immediately on one failed poll to avoid flickering
-    // but if it persists, UI will show last known state
     return false;
   },
 
   // Push local cache to cloud
   save: async () => {
     const projectId = StorageService.getProjectId();
-    if (!projectId) {
-        alert("Chyba: Chybí ID týmu. Zkuste obnovit stránku.");
+    if (!projectId) return;
+
+    // Optimistic Timestamp
+    CACHE.lastUpdated = Date.now();
+
+    // If offline mode, just notify listeners (data is in memory/localstorage technically via App state)
+    if (projectId.startsWith('offline_')) {
+        notifyListeners();
         return;
     }
 
-    // 1. First, fetch latest to ensure we don't overwrite others blindly (basic optimistic locking)
     try {
-        const response = await fetch(`${BLOB_API_URL}/${projectId}?_t=${Date.now()}`);
-        if (response.ok) {
-            const cloudData = await response.json();
-            // In a real app, we would merge. Here we assume "Last Save Wins" but we preserve other collections if needed
-            // For now, we trust the current user's action is the truth for the entity they are editing
-        }
-    } catch (e) {
-        // Ignore fetch error on save, try to push anyway
-    }
-
-    // 2. Update timestamp
-    CACHE.lastUpdated = Date.now();
-
-    try {
-      const res = await fetch(`${BLOB_API_URL}/${projectId}`, {
+      await robustFetch(`${BLOB_API_URL}/${projectId}`, {
         method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
         body: JSON.stringify(CACHE)
       });
-      
-      if (res.ok) {
-        IS_CONNECTED = true;
-        notifyListeners(); // Update UI
-      } else {
-        alert("Chyba při ukládání do cloudu! Zkontrolujte internet.");
-        IS_CONNECTED = false;
-      }
+      IS_CONNECTED = true;
+      notifyListeners();
     } catch (e) {
-      alert("Chyba při ukládání do cloudu! Zkontrolujte internet.");
+      console.error("Save failed", e);
       IS_CONNECTED = false;
+      notifyListeners();
+      // Only alert if we thought we were online
+      if (IS_CONNECTED) {
+          alert("POZOR: Nepodařilo se uložit data do cloudu! Zkontrolujte připojení.");
+      }
     }
   },
 
@@ -283,21 +378,17 @@ export const StorageService = {
     }
   },
 
-  // Calculates stats for "Now" based on current CACHE
   getItemStats: (itemId: string) => {
     const item = CACHE.inventory.find(i => i.id === itemId);
     if (!item) return { total: 0, onAction: 0, available: 0 };
 
     const events = CACHE.events;
-    // Use strict date comparison logic
     const now = new Date(); 
-    now.setHours(0,0,0,0); // Comparison is day-based usually
+    now.setHours(0,0,0,0);
 
     let onAction = 0;
 
     events.forEach(event => {
-      // Items are "On Action" if event is RESERVED or ISSUED
-      // AND current date is within range
       if (event.status !== EventStatus.RESERVED && event.status !== EventStatus.ISSUED) return;
 
       const start = new Date(event.startDate);
@@ -316,62 +407,41 @@ export const StorageService = {
     return {
       total: item.totalQuantity,
       onAction: onAction,
-      available: Math.max(0, item.totalQuantity - onAction) // Available logic for "Now"
+      available: Math.max(0, item.totalQuantity - onAction)
     };
   },
 
-  // Logic to prevent booking if already booked in future
   checkAvailability: (itemId: string, startDateStr: string, endDateStr: string, currentEventId?: string): number => {
     const item = CACHE.inventory.find(i => i.id === itemId);
     if (!item) return 0;
 
     const events = CACHE.events;
     
-    // Convert inputs to Time for comparison
     const reqStart = new Date(startDateStr);
     reqStart.setHours(0,0,0,0);
     const reqEnd = new Date(endDateStr);
     reqEnd.setHours(23,59,59,999);
 
     const bufferDays = CATEGORY_BUFFER_DAYS[item.category] || 0;
-    // Buffer is added AFTER the event end date
     
-    let maxReservedQuantity = 0;
-
-    // We need to find the specific day in the range [reqStart, reqEnd] with the MAXIMUM overlap
-    // A simple sum is wrong because events might not overlap with each other, but both overlap with request.
-    // Actually, for a specific item, we just need to subtract any confirmed event that overlaps with our range.
-    // If multiple events overlap on the SAME day, we sum them.
-    
-    // Simplified robust algorithm:
-    // 1. Iterate through every day of the requested period.
-    // 2. For that day, sum up all quantities from overlapping events (including buffer).
-    // 3. The lowest availability across all days is the result.
-
     let minAvailability = item.totalQuantity;
 
-    // Create loop for days
     for (let d = new Date(reqStart); d <= reqEnd; d.setDate(d.getDate() + 1)) {
         let reservedOnDay = 0;
-        
         const currentDayTime = d.getTime();
 
         for (const event of events) {
             if (currentEventId && event.id === currentEventId) continue;
             if (event.status === EventStatus.RETURNED || event.status === EventStatus.PLANNED) continue;
-            // Matches RESERVED and ISSUED
             
             const evStart = new Date(event.startDate);
             evStart.setHours(0,0,0,0);
-            
             const evEnd = new Date(event.endDate);
             evEnd.setHours(23,59,59,999);
             
-            // Add buffer to event end
             const bufferMs = bufferDays * 24 * 60 * 60 * 1000;
             const blockingEnd = evEnd.getTime() + bufferMs;
 
-            // Check if currentDay is inside [evStart, blockingEnd]
             if (currentDayTime >= evStart.getTime() && currentDayTime <= blockingEnd) {
                 const eventItem = event.items.find(i => i.itemId === itemId);
                 if (eventItem) {
@@ -396,22 +466,7 @@ export const StorageService = {
       if (invItemIndex !== -1) {
         const item = inventory[invItemIndex];
         const issued = evItem.quantity;
-        // If returned undefined, assume all returned ok if not broken specified? 
-        // Logic: Manager fills returnedQuantity. 
         const returned = evItem.returnedQuantity !== undefined ? evItem.returnedQuantity : issued;
-        
-        // Loss is anything NOT returned. 
-        // Note: Broken items are usually considered "returned but destroyed" or "missing".
-        // The prompt says: "vráceno + rozbito (2 čísla)".
-        // If user enters Returned: 10, Broken: 2. Issued was 12. OK.
-        // If Issued 12, Returned 10. Missing 2.
-        
-        // We subtract Broken and Missing from Stock.
-        const broken = evItem.brokenQuantity || 0; // If you add broken field later
-        
-        // Based on WarehouseProcess component: 
-        // We only have `returnedQuantity` input. 
-        // The difference (Issued - Returned) is considered LOST/BROKEN and removed from stock.
         
         const loss = Math.max(0, issued - returned);
         
@@ -423,7 +478,6 @@ export const StorageService = {
 
     event.status = EventStatus.RETURNED;
     
-    // Update local cache structure
     const eventIndex = CACHE.events.findIndex(e => e.id === event.id);
     if (eventIndex !== -1) {
         CACHE.events[eventIndex] = event;
