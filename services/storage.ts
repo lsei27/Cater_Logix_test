@@ -4,6 +4,7 @@ const STORAGE_KEYS = {
   PROJECT_ID: 'caterlogix_project_id',
   CURRENT_USER: 'caterlogix_current_user'
 };
+const LOCAL_CACHE_KEY = 'caterlogix_cache';
 
 const BLOB_API_URL = 'https://jsonblob.com/api/jsonBlob';
 // Primary Proxy
@@ -76,6 +77,27 @@ const notifyListeners = () => {
   LISTENERS.forEach(l => l());
 };
 
+const persistCacheLocally = () => {
+  try {
+    localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(CACHE));
+  } catch (err) {
+    console.warn('Local cache persist failed', err);
+  }
+};
+
+const loadCacheFromLocalStorage = (): boolean => {
+  const stored = localStorage.getItem(LOCAL_CACHE_KEY);
+  if (stored) {
+    try {
+      CACHE = JSON.parse(stored);
+      return true;
+    } catch (err) {
+      console.warn('Failed to parse local cache', err);
+    }
+  }
+  return false;
+};
+
 // --- ROBUST NETWORK FETCH ---
 const robustFetch = async (url: string, options: RequestInit = {}) => {
   const defaultOptions: RequestInit = {
@@ -115,13 +137,63 @@ const robustFetch = async (url: string, options: RequestInit = {}) => {
   }
 };
 
-const extractIdFromLocation = (location: string | null): string | null => {
-  if (!location) return null;
-  // Handle full URL or relative path
-  // Split by '/' and take the last non-empty segment
-  const parts = location.split('/').filter(p => p.trim().length > 0);
-  const id = parts.pop();
-  return id || null;
+const generateProjectId = () => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `team_${crypto.randomUUID()}`;
+  }
+  return `team_${Date.now().toString(36)}`;
+};
+
+const createCloudSpace = async (initialData: AppData): Promise<string | null> => {
+  const newId = generateProjectId();
+  const baseUrl = `${BLOB_API_URL}/${newId}`;
+
+  const tryPut = async (targetUrl: string, markProxy = false) => {
+    const response = await fetch(targetUrl, {
+      method: 'PUT',
+      mode: 'cors',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(initialData)
+    });
+
+    if (!response.ok) {
+      throw new Error(`PUT failed ${response.status}`);
+    }
+
+    if (markProxy) {
+      USE_PROXY = true;
+    }
+  };
+
+  // 1) Try direct or auto-proxy via robustFetch (covers CORSProxy fallback)
+  try {
+    await robustFetch(baseUrl, { method: 'PUT', body: JSON.stringify(initialData) });
+    return newId;
+  } catch (err) {
+    console.warn('Direct/primary creation failed', err);
+  }
+
+  // 2) Explicit fallback proxies (some proxies do not expose headers, but PUT works)
+  const proxyTargets = [
+    { url: `${PROXY_URL}${encodeURIComponent(baseUrl)}`, markProxy: true },
+    { url: `${BACKUP_PROXY_URL}${baseUrl}`, markProxy: true }
+  ];
+
+  for (const target of proxyTargets) {
+    try {
+      await tryPut(target.url, target.markProxy);
+      return newId;
+    } catch (proxyErr) {
+      console.warn('Proxy creation attempt failed', proxyErr);
+    }
+  }
+
+  return null;
 };
 
 export const StorageService = {
@@ -144,6 +216,7 @@ export const StorageService = {
 
   // Initialize: Must succeed in Cloud or fail
   init: async (): Promise<boolean> => {
+    const hasLocalCache = loadCacheFromLocalStorage();
     const projectId = StorageService.getProjectId();
 
     if (projectId) {
@@ -164,6 +237,13 @@ export const StorageService = {
       } catch (e) {
         console.error("Init sync failed:", e);
       }
+
+      if (hasLocalCache) {
+        console.warn("Falling back to local cache while offline.");
+        IS_CONNECTED = false;
+        notifyListeners();
+        return true;
+      }
     } else {
       // Create new Cloud Storage
       try {
@@ -172,80 +252,17 @@ export const StorageService = {
             events: [],
             lastUpdated: Date.now()
         };
-        
-        let location: string | null = null;
-
-        // 1. Try Standard Robust Fetch (Direct or Auto-Proxy)
-        try {
-            const response = await robustFetch(BLOB_API_URL, {
-                method: 'POST',
-                body: JSON.stringify(initialData)
-            });
-            location = response.headers.get('Location') || response.headers.get('location') || response.headers.get('x-jsonblob');
-        } catch (e) {
-            console.warn("Initial creation request failed", e);
-        }
-
-        // 2. If no location found, try fallback proxies explicitly
-        if (!location) {
-            console.warn("Location header missing or request failed. Retrying creation via Fallback Proxies...");
-            
-            const proxies = [
-                // 1. Primary Proxy (encoded)
-                (url: string) => `${PROXY_URL}${encodeURIComponent(url)}`,
-                // 2. Backup Proxy (direct append)
-                (url: string) => `${BACKUP_PROXY_URL}${url}`
-            ];
-
-            for (const createProxyUrl of proxies) {
-                if (location) break; 
-                try {
-                    const target = createProxyUrl(BLOB_API_URL);
-                    console.log("Attempting proxy:", target);
-                    
-                    const response = await fetch(target, {
-                        method: 'POST',
-                        credentials: 'omit',
-                        mode: 'cors',
-                        headers: { 
-                            'Content-Type': 'application/json',
-                            'Accept': 'application/json'
-                        },
-                        body: JSON.stringify(initialData)
-                    });
-                    
-                    if (response.ok) {
-                        location = response.headers.get('Location') || 
-                                   response.headers.get('location') || 
-                                   response.headers.get('x-final-url') ||
-                                   response.headers.get('x-jsonblob');
-                                   
-                        if (location) {
-                            console.log("Recovered Location via proxy");
-                            // If primary proxy worked, set global use
-                            if (target.includes('corsproxy.io')) {
-                                USE_PROXY = true;
-                            }
-                        }
-                    }
-                } catch (proxyErr) {
-                    console.warn("Proxy attempt failed", proxyErr);
-                }
-            }
-        }
-        
-        // 3. Extract ID
-        let newId = extractIdFromLocation(location);
+        let newId = await createCloudSpace(initialData);
 
         if (!newId) {
-            console.warn("Failed to extract ID from Cloud after all attempts. Switching to Offline Mode.");
-            // Fallback to Offline Mode to prevent app crash
-            newId = `offline_${Date.now()}`;
+          console.warn("Failed to create cloud space after all attempts. Switching to Offline Mode.");
+          newId = `offline_${Date.now()}`;
         }
 
         if (newId) {
           StorageService.setProjectId(newId);
           CACHE = initialData;
+          persistCacheLocally();
           IS_CONNECTED = !newId.startsWith('offline_'); // Only connected if real cloud ID
           notifyListeners();
           return true;
@@ -277,6 +294,7 @@ export const StorageService = {
           
           if (currentStr !== cloudStr) {
               CACHE = cloudData;
+              persistCacheLocally();
               notifyListeners();
           }
           IS_CONNECTED = true;
@@ -299,6 +317,7 @@ export const StorageService = {
 
     // If offline mode, just notify listeners (data is in memory/localstorage technically via App state)
     if (projectId.startsWith('offline_')) {
+        persistCacheLocally();
         notifyListeners();
         return;
     }
@@ -309,13 +328,15 @@ export const StorageService = {
         body: JSON.stringify(CACHE)
       });
       IS_CONNECTED = true;
+      persistCacheLocally();
       notifyListeners();
     } catch (e) {
       console.error("Save failed", e);
+      const wasConnected = IS_CONNECTED;
       IS_CONNECTED = false;
       notifyListeners();
       // Only alert if we thought we were online
-      if (IS_CONNECTED) {
+      if (wasConnected) {
           alert("POZOR: Nepodařilo se uložit data do cloudu! Zkontrolujte připojení.");
       }
     }
