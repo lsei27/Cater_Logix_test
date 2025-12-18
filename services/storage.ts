@@ -70,7 +70,7 @@ let CACHE: AppData = {
 };
 
 let IS_CONNECTED = false;
-let USE_PROXY = false;
+let PROXY_MODE: 'none' | 'primary' | 'backup' = 'none';
 let LISTENERS: (() => void)[] = [];
 
 const notifyListeners = () => {
@@ -102,6 +102,12 @@ let INIT_IN_FLIGHT: Promise<boolean> | null = null;
 
 const parseLocalDateStart = (dateStr: string) => new Date(`${dateStr}T00:00:00`);
 const parseLocalDateEnd = (dateStr: string) => new Date(`${dateStr}T23:59:59.999`);
+
+const wrapUrlWithProxy = (url: string, mode: typeof PROXY_MODE) => {
+  if (mode === 'primary') return `${PROXY_URL}${encodeURIComponent(url)}`;
+  if (mode === 'backup') return `${BACKUP_PROXY_URL}${url}`;
+  return url;
+};
 
 function normalizeEvent(event: any): CateringEvent {
   const startDate = typeof event?.startDate === 'string' ? event.startDate : '';
@@ -155,23 +161,39 @@ const robustFetch = async (url: string, options: RequestInit = {}) => {
     return response;
   };
 
-  try {
-    const target = USE_PROXY ? `${PROXY_URL}${encodeURIComponent(url)}` : url;
-    return await tryRequest(target);
-  } catch (directError) {
-    if (USE_PROXY) throw directError;
+  const attempts: { mode: typeof PROXY_MODE; url: string }[] =
+    PROXY_MODE === 'primary'
+      ? [
+          { mode: 'primary', url: wrapUrlWithProxy(url, 'primary') },
+          { mode: 'backup', url: wrapUrlWithProxy(url, 'backup') },
+          { mode: 'none', url: wrapUrlWithProxy(url, 'none') },
+        ]
+      : PROXY_MODE === 'backup'
+        ? [
+            { mode: 'backup', url: wrapUrlWithProxy(url, 'backup') },
+            { mode: 'primary', url: wrapUrlWithProxy(url, 'primary') },
+            { mode: 'none', url: wrapUrlWithProxy(url, 'none') },
+          ]
+        : [
+            { mode: 'none', url: wrapUrlWithProxy(url, 'none') },
+            { mode: 'primary', url: wrapUrlWithProxy(url, 'primary') },
+            { mode: 'backup', url: wrapUrlWithProxy(url, 'backup') },
+          ];
 
-    console.warn("Direct connection failed. Switching to Proxy Mode...");
+  let lastError: unknown = null;
+
+  for (const attempt of attempts) {
     try {
-      const proxyUrl = `${PROXY_URL}${encodeURIComponent(url)}`;
-      const response = await tryRequest(proxyUrl);
-      USE_PROXY = true; 
+      const response = await tryRequest(attempt.url);
+      PROXY_MODE = attempt.mode;
       return response;
-    } catch (proxyError) {
-      console.error("Proxy connection also failed.", proxyError);
-      throw proxyError;
+    } catch (err) {
+      lastError = err;
     }
   }
+
+  console.error("All connection attempts failed.", lastError);
+  throw lastError;
 };
 
 const generateProjectId = () => {
@@ -185,7 +207,7 @@ const createCloudSpace = async (initialData: AppData): Promise<string | null> =>
   const newId = generateProjectId();
   const baseUrl = `${BLOB_API_URL}/${newId}`;
 
-  const tryPut = async (targetUrl: string, markProxy = false) => {
+  const tryPut = async (targetUrl: string, proxyModeToMark?: 'primary' | 'backup') => {
     const response = await fetch(targetUrl, {
       method: 'PUT',
       mode: 'cors',
@@ -202,8 +224,8 @@ const createCloudSpace = async (initialData: AppData): Promise<string | null> =>
       throw new Error(`PUT failed ${response.status}`);
     }
 
-    if (markProxy) {
-      USE_PROXY = true;
+    if (proxyModeToMark) {
+      PROXY_MODE = proxyModeToMark;
     }
   };
 
@@ -217,13 +239,13 @@ const createCloudSpace = async (initialData: AppData): Promise<string | null> =>
 
   // 2) Explicit fallback proxies (some proxies do not expose headers, but PUT works)
   const proxyTargets = [
-    { url: `${PROXY_URL}${encodeURIComponent(baseUrl)}`, markProxy: true },
-    { url: `${BACKUP_PROXY_URL}${baseUrl}`, markProxy: true }
+    { url: `${PROXY_URL}${encodeURIComponent(baseUrl)}`, proxyModeToMark: 'primary' as const },
+    { url: `${BACKUP_PROXY_URL}${baseUrl}`, proxyModeToMark: 'backup' as const }
   ];
 
   for (const target of proxyTargets) {
     try {
-      await tryPut(target.url, target.markProxy);
+      await tryPut(target.url, target.proxyModeToMark);
       return newId;
     } catch (proxyErr) {
       console.warn('Proxy creation attempt failed', proxyErr);
@@ -242,7 +264,7 @@ export const StorageService = {
   },
 
   isConnected: () => IS_CONNECTED,
-  isUsingProxy: () => USE_PROXY,
+  isUsingProxy: () => PROXY_MODE !== 'none',
 
   getProjectId: () => localStorage.getItem(STORAGE_KEYS.PROJECT_ID),
 
