@@ -18,7 +18,8 @@ const Icons = {
   Upload: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>,
   Cloud: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>,
   Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>,
-  Shield: () => <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+  Shield: () => <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>,
+  History: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v5h5"></path><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"></path></svg>
 };
 
 // --- Helper Functions ---
@@ -55,7 +56,7 @@ const StatusBadge = ({ status }: { status: EventStatus }) => {
     [EventStatus.PLANNED]: 'bg-yellow-100 text-yellow-800 border-yellow-200',
     [EventStatus.RESERVED]: 'bg-blue-100 text-blue-800 border-blue-200',
     [EventStatus.ISSUED]: 'bg-purple-100 text-purple-800 border-purple-200',
-    [EventStatus.RETURNED]: 'bg-green-100 text-green-800 border-green-200',
+    [EventStatus.RETURNED]: 'bg-gray-100 text-gray-800 border-gray-200',
   };
   return (
     <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium border ${styles[status]}`}>
@@ -617,7 +618,8 @@ function InventoryManager({ inventory, onAdd, onEdit, onDelete }: any) {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Název</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Kategorie</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-green-50 text-green-800">Ihneď volné</th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-orange-50 text-orange-800">Na akcích</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-blue-50 text-blue-800" title="Rezervováno pro dnešní den">Rezervováno</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-purple-50 text-purple-800" title="Vydáno mimo sklad">Vydáno</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-100 text-gray-800">Celkem</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Akce</th>
             </tr>
@@ -640,7 +642,8 @@ function InventoryManager({ inventory, onAdd, onEdit, onDelete }: any) {
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.name}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.category}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600 text-right">{stats.available} ks</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-orange-600 text-right">{stats.onAction} ks</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600 text-right font-medium">{stats.reserved > 0 ? stats.reserved + ' ks' : '-'}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-purple-600 text-right font-medium">{stats.issued > 0 ? stats.issued + ' ks' : '-'}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900 text-right bg-gray-50">{stats.total} ks</td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <div className="flex justify-end gap-2">
@@ -992,8 +995,11 @@ function EventEditor({ initialData, inventory, onCancel, onSave, currentUser }: 
 }
 
 function WarehouseView({ view, setView, events, inventory, onDataChange, inventoryViewProps, activeEventId, setActiveEventId }: any) {
-  const [activeTab, setActiveTab] = useState<'DISPATCH' | 'INVENTORY'>('DISPATCH');
-  const warehouseEvents = events.filter((e: CateringEvent) => e.status !== EventStatus.RETURNED);
+  const [activeTab, setActiveTab] = useState<'DISPATCH' | 'HISTORY' | 'INVENTORY'>('DISPATCH');
+  
+  // Filter events based on tab
+  const activeEvents = events.filter((e: CateringEvent) => e.status !== EventStatus.RETURNED);
+  const returnedEvents = events.filter((e: CateringEvent) => e.status === EventStatus.RETURNED);
   
   if (view === 'EVENT_PROCESS') {
      return (
@@ -1012,10 +1018,10 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
 
   return (
     <div className="space-y-6">
-       <div className="flex border-b border-gray-200">
+       <div className="flex border-b border-gray-200 overflow-x-auto">
         <button
           onClick={() => setActiveTab('DISPATCH')}
-          className={`py-4 px-6 font-medium text-sm focus:outline-none border-b-2 transition-colors ${
+          className={`py-4 px-6 font-medium text-sm focus:outline-none border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'DISPATCH' 
               ? 'border-indigo-600 text-indigo-600' 
               : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -1024,8 +1030,18 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
           Expedice & Příjem
         </button>
         <button
+          onClick={() => setActiveTab('HISTORY')}
+          className={`py-4 px-6 font-medium text-sm focus:outline-none border-b-2 transition-colors whitespace-nowrap ${
+            activeTab === 'HISTORY' 
+              ? 'border-indigo-600 text-indigo-600' 
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+          }`}
+        >
+          Historie / Vráceno
+        </button>
+        <button
           onClick={() => setActiveTab('INVENTORY')}
-          className={`py-4 px-6 font-medium text-sm focus:outline-none border-b-2 transition-colors ${
+          className={`py-4 px-6 font-medium text-sm focus:outline-none border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'INVENTORY' 
               ? 'border-indigo-600 text-indigo-600' 
               : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -1037,11 +1053,55 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
 
       {activeTab === 'INVENTORY' ? (
         <InventoryManager {...inventoryViewProps} />
+      ) : activeTab === 'HISTORY' ? (
+        <div className="space-y-4">
+             <h2 className="text-lg font-bold text-gray-900">Ukončené a vrácené akce</h2>
+             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                 {returnedEvents.map((event: CateringEvent) => (
+                      <div key={event.id} className="bg-gray-50 rounded-xl border border-gray-200 p-5 shadow-sm opacity-90 hover:opacity-100 transition-all">
+                           <div className="flex justify-between items-start mb-3">
+                                <StatusBadge status={event.status} />
+                                <span className="text-xs font-mono text-gray-400">#{event.id.slice(-4)}</span>
+                            </div>
+                            <h3 className="font-bold text-gray-700 text-lg mb-1">{event.name}</h3>
+                            <div className="text-sm text-gray-500 flex items-center gap-2 mb-4">
+                                <Icons.Calendar />
+                                {new Date(event.startDate).toLocaleDateString('cs-CZ')}
+                            </div>
+                            <div className="space-y-2 pt-4 border-t border-gray-200">
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-gray-600">Položek:</span>
+                                    <span className="font-medium">{event.items.reduce((a, b) => a + b.quantity, 0)} ks</span>
+                                </div>
+                                <div className="flex gap-2 mt-2">
+                                     <button 
+                                        onClick={() => downloadEventCSV(event, inventory)}
+                                        className="flex-1 bg-white border border-gray-300 text-gray-600 px-2 py-1.5 rounded text-xs font-medium hover:bg-gray-100 flex items-center justify-center gap-1"
+                                    >
+                                        <Icons.Download /> CSV
+                                    </button>
+                                    <button 
+                                        onClick={() => { setActiveEventId(event.id); setView('EVENT_PROCESS'); }}
+                                        className="flex-1 bg-white border border-gray-300 text-gray-600 px-2 py-1.5 rounded text-xs font-medium hover:bg-gray-100 flex items-center justify-center gap-1"
+                                    >
+                                         <Icons.History /> Detail
+                                    </button>
+                                </div>
+                            </div>
+                      </div>
+                 ))}
+                 {returnedEvents.length === 0 && (
+                    <div className="col-span-full py-12 text-center text-gray-400 bg-white rounded-xl border border-dashed border-gray-300">
+                        Žádné ukončené akce v historii.
+                    </div>
+                )}
+             </div>
+        </div>
       ) : (
         <div className="space-y-4">
-            <h2 className="text-lg font-bold text-gray-900">Plánované akce</h2>
+            <h2 className="text-lg font-bold text-gray-900">Plánované akce (K vyřízení)</h2>
             <div className="grid gap-4 sm:grid-cols-2">
-                {warehouseEvents.map((event: CateringEvent) => {
+                {activeEvents.map((event: CateringEvent) => {
                     const isToday = new Date(event.startDate).toDateString() === new Date().toDateString();
                     
                     return (
@@ -1093,9 +1153,9 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
                         </div>
                     );
                 })}
-                {warehouseEvents.length === 0 && (
+                {activeEvents.length === 0 && (
                     <div className="col-span-full py-12 text-center text-gray-400 bg-white rounded-xl border border-dashed border-gray-300">
-                        Žádné akce k vyřízení.
+                        Žádné aktivní akce k vyřízení.
                     </div>
                 )}
             </div>
@@ -1108,12 +1168,18 @@ function WarehouseView({ view, setView, events, inventory, onDataChange, invento
 function WarehouseProcess({ event, inventory, onBack, onSave }: any) {
     const [items, setItems] = useState<EventItem[]>(JSON.parse(JSON.stringify(event.items)));
     const isReturning = event.status === EventStatus.ISSUED;
+    const isClosed = event.status === EventStatus.RETURNED;
 
     const handleReturnCount = (itemId: string, val: number) => {
         setItems(items.map(i => i.itemId === itemId ? { ...i, returnedQuantity: val } : i));
     };
 
     const handleProcess = async () => {
+        if (isClosed) {
+             onSave();
+             return;
+        }
+
         if (!isReturning) {
             // Issuing
             const updated = { ...event, status: EventStatus.ISSUED };
@@ -1131,15 +1197,17 @@ function WarehouseProcess({ event, inventory, onBack, onSave }: any) {
              <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 rounded-t-xl">
                 <div>
                     <h2 className="text-lg font-bold text-gray-900">
-                        {isReturning ? 'Příjem vratky (Uzavření akce)' : 'Výdej ze skladu'}
+                        {isClosed ? 'Detail ukončené akce' : (isReturning ? 'Příjem vratky (Uzavření akce)' : 'Výdej ze skladu')}
                     </h2>
                     <p className="text-xs text-gray-500">{event.name}</p>
                 </div>
                 <div className="flex gap-2">
                     <button onClick={onBack} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded">Zpět</button>
-                    <button onClick={handleProcess} className={`px-4 py-1.5 text-sm text-white rounded shadow-sm ${isReturning ? 'bg-green-600 hover:bg-green-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-                        {isReturning ? 'Uzavřít a naskladnit' : 'Potvrdit výdej'}
-                    </button>
+                    {!isClosed && (
+                        <button onClick={handleProcess} className={`px-4 py-1.5 text-sm text-white rounded shadow-sm ${isReturning ? 'bg-green-600 hover:bg-green-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+                            {isReturning ? 'Uzavřít a naskladnit' : 'Potvrdit výdej'}
+                        </button>
+                    )}
                 </div>
             </div>
             
@@ -1149,7 +1217,7 @@ function WarehouseProcess({ event, inventory, onBack, onSave }: any) {
                         <tr>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Položka</th>
                             <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Vydáno</th>
-                            {isReturning && (
+                            {(isReturning || isClosed) && (
                                 <>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Vráceno OK</th>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Rozbito/Ztraceno</th>
@@ -1168,14 +1236,15 @@ function WarehouseProcess({ event, inventory, onBack, onSave }: any) {
                                      <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 text-right">
                                          {item.quantity} ks
                                      </td>
-                                     {isReturning && (
+                                     {(isReturning || isClosed) && (
                                          <>
                                              <td className="px-4 py-4 whitespace-nowrap text-right">
                                                  <input 
                                                     type="number" 
                                                     min="0"
                                                     max={item.quantity}
-                                                    className="w-20 border-gray-300 rounded text-right text-sm p-1 border"
+                                                    disabled={isClosed}
+                                                    className={`w-20 border-gray-300 rounded text-right text-sm p-1 border ${isClosed ? 'bg-gray-100' : ''}`}
                                                     value={item.returnedQuantity ?? item.quantity} // Default to all returned OK
                                                     onChange={e => handleReturnCount(item.itemId, parseInt(e.target.value) || 0)}
                                                  />

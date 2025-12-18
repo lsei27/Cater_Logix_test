@@ -380,15 +380,17 @@ export const StorageService = {
 
   getItemStats: (itemId: string) => {
     const item = CACHE.inventory.find(i => i.id === itemId);
-    if (!item) return { total: 0, onAction: 0, available: 0 };
+    if (!item) return { total: 0, reserved: 0, issued: 0, available: 0 };
 
     const events = CACHE.events;
     const now = new Date(); 
     now.setHours(0,0,0,0);
 
-    let onAction = 0;
+    let reserved = 0;
+    let issued = 0;
 
     events.forEach(event => {
+      // Only count active statuses
       if (event.status !== EventStatus.RESERVED && event.status !== EventStatus.ISSUED) return;
 
       const start = new Date(event.startDate);
@@ -396,18 +398,24 @@ export const StorageService = {
       start.setHours(0,0,0,0);
       end.setHours(23,59,59,999);
 
+      // Only count if event is currently active (today falls within range)
       if (now >= start && now <= end) {
          const evItem = event.items.find(i => i.itemId === itemId);
          if (evItem) {
-           onAction += evItem.quantity;
+           if (event.status === EventStatus.ISSUED) {
+               issued += evItem.quantity;
+           } else {
+               reserved += evItem.quantity;
+           }
          }
       }
     });
 
     return {
       total: item.totalQuantity,
-      onAction: onAction,
-      available: Math.max(0, item.totalQuantity - onAction)
+      reserved: reserved,
+      issued: issued,
+      available: Math.max(0, item.totalQuantity - (reserved + issued))
     };
   },
 
@@ -432,6 +440,7 @@ export const StorageService = {
 
         for (const event of events) {
             if (currentEventId && event.id === currentEventId) continue;
+            // IMPORTANT: PLANNED (Drafts) do not block, RETURNED are closed.
             if (event.status === EventStatus.RETURNED || event.status === EventStatus.PLANNED) continue;
             
             const evStart = new Date(event.startDate);
@@ -471,6 +480,7 @@ export const StorageService = {
         const loss = Math.max(0, issued - returned);
         
         if (loss > 0) {
+          // Permanently deduct lost items from stock
           item.totalQuantity = Math.max(0, item.totalQuantity - loss);
         }
       }
